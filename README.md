@@ -46,6 +46,17 @@ Done, without errors.
 
 The extension in crx format will be inside the build/crx/ directory. You can drag it into [extensions] (chrome://extensions) to install locally.
 
+### Package the local-only suspender extension
+
+The privacy-first Manifest V3 rewrite that lives in `local-suspender/` can be zipped into a testable archive without touching the legacy Grunt pipeline. From the repository root:
+
+1. Ensure you have Node.js (for reading the manifest version) and the `zip` utility available on your system.
+2. Run `npm run package:local-suspender`.
+3. The script creates `dist/local-suspender-<version>.zip`. This archive contains the unpacked extension files.
+4. Visit `chrome://extensions`, enable **Developer mode**, and click **Load unpacked**. Point Chrome either at the `local-suspender/` source directory or at an extracted copy of the generated archive to try the extension locally.
+
+Because the archive is produced entirely offline, no network access is required at any stage.
+
 ### Integrating with another Chrome extension or app
 
 This extension has a small external api to allow other extensions to request the suspension of a tab. See [this issue](https://github.com/greatsuspender/thegreatsuspender/issues/276) for more information. And please let me know about it so that I can try it out!

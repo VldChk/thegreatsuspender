@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Local Tab Suspender</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Local Tab Suspender</h1>
+    </header>
+    <main>
+      <button id="suspendCurrent">Suspend current tab</button>
+      <button id="suspendInactive">Suspend inactive tabs</button>
+      <section id="status"></section>
+      <section id="suspendedList">
+        <h2>Suspended tabs</h2>
+        <ul id="tabs"></ul>
+      </section>
+      <p class="hint">Manage preferences from the extension options page.</p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

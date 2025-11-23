@@ -15,6 +15,16 @@ document.getElementById('suspendInactive').addEventListener('click', async () =>
   await refreshState('Suspended inactive tabs.');
 });
 
+document.getElementById('unsuspendAll').addEventListener('click', async () => {
+  await sendMessage('RESUME_ALL');
+  await refreshState('Unsuspended all tabs.');
+});
+
+document.getElementById('openOptions').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
 function formatTimestamp(ts) {
   if (!ts) return '';
   const date = new Date(ts);

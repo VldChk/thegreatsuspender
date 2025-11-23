@@ -24,6 +24,14 @@ h1 {
   margin-top: 0;
 }
 
+#siteLogo {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 16px;
+  object-fit: contain;
+  filter: grayscale(100%) opacity(0.5);
+}
+
 p {
   font-size: 14px;
 }

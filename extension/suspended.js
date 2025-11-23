@@ -23,8 +23,45 @@ if (faviconParam) {
   const link = document.querySelector("link[rel~='icon']") || document.createElement('link');
   link.type = 'image/x-icon';
   link.rel = 'icon';
+  // Default to original first
   link.href = faviconParam;
   document.getElementsByTagName('head')[0].appendChild(link);
+
+  // Set the on-page logo
+  const logoEl = document.getElementById('siteLogo');
+  if (logoEl) {
+    logoEl.src = faviconParam;
+  }
+
+  // Try to apply grayscale to the tab icon
+  getGrayscaleFavicon(faviconParam).then(grayUrl => {
+    if (grayUrl) {
+      link.href = grayUrl;
+    }
+  }).catch(err => console.warn('Failed to generate grayscale favicon', err));
+}
+
+function getGrayscaleFavicon(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'Anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const size = 32; // Standard favicon size
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.filter = 'grayscale(100%) opacity(0.6)';
+        ctx.drawImage(img, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/png'));
+      } catch (e) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
 }
 
 function sendMessage(type, payload = {}) {

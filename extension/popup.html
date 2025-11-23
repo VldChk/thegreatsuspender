@@ -1,24 +1,43 @@
 <!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Local Tab Suspender</title>
-    <link rel="stylesheet" href="popup.css" />
-  </head>
-  <body>
-    <header>
-      <h1>Local Tab Suspender</h1>
-    </header>
-    <main>
-      <button id="suspendCurrent">Suspend current tab</button>
-      <button id="suspendInactive">Suspend inactive tabs</button>
-      <section id="status"></section>
-      <section id="suspendedList">
-        <h2>Suspended tabs</h2>
-        <ul id="tabs"></ul>
-      </section>
-      <p class="hint">Manage preferences from the extension options page.</p>
-    </main>
-    <script type="module" src="popup.js"></script>
-  </body>
+
+<head>
+  <meta charset="utf-8" />
+  <title>Local Tab Suspender</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+
+<body>
+  <header>
+    <h1>Local Tab Suspender</h1>
+    <button id="openOptions" class="icon-btn" title="Options">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path
+          d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+        </path>
+      </svg>
+    </button>
+  </header>
+  <main>
+    <div class="actions-group">
+      <button id="suspendCurrent" class="btn btn-primary">Suspend current tab</button>
+      <button id="suspendInactive" class="btn btn-secondary">Suspend inactive tabs</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <button id="unsuspendAll" class="btn btn-outline">Unsuspend all tabs</button>
+
+    <div id="status" class="status-message"></div>
+
+    <section id="suspendedList">
+      <h2>Suspended Tabs</h2>
+      <ul id="tabs"></ul>
+    </section>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+
 </html>

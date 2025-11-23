@@ -243,7 +243,12 @@ async function loadState() {
   return cachedState;
 }
 
+let reconciliationLock = Promise.resolve();
+
 async function saveState(state) {
+  // Wait for any ongoing reconciliation to finish
+  await reconciliationLock;
+
   cachedState = state;
   const settings = await ensureSettings();
   if (settings.encryption.enabled) {
@@ -595,26 +600,46 @@ async function decryptPayload(payload) {
 }
 
 async function reconcilePendingStateAfterUnlock() {
-  const stored = await chrome.storage.local.get(STATE_KEY);
-  const payload = stored[STATE_KEY];
-  const pending = await loadPendingState();
-  let merged = mergeStates({ suspendedTabs: {} }, pending);
+  // Create a lock promise that resolves when this function completes
+  let releaseLock;
+  const lockPromise = new Promise(resolve => { releaseLock = resolve; });
+  // Chain it to the existing lock to ensure sequential execution if multiple unlocks happen (unlikely but safe)
+  const previousLock = reconciliationLock;
+  reconciliationLock = lockPromise;
 
-  if (payload && payload.ct) {
-    try {
-      const decrypted = await decryptPayload(payload);
-      merged = mergeStates(decrypted, pending);
-    } catch (err) {
-      Logger.warn('Failed to decrypt stored state after unlock', err);
+  try {
+    await previousLock; // Wait for any previous operation
+
+    const stored = await chrome.storage.local.get(STATE_KEY);
+    const payload = stored[STATE_KEY];
+    const pending = await loadPendingState();
+    let merged = mergeStates({ suspendedTabs: {} }, pending);
+
+    if (payload && payload.ct) {
+      try {
+        const decrypted = await decryptPayload(payload);
+        merged = mergeStates(decrypted, pending);
+      } catch (err) {
+        Logger.warn('Failed to decrypt stored state after unlock', err);
+      }
+    } else if (payload && payload.plain) {
+      merged = mergeStates(payload.plain, pending);
     }
-  } else if (payload && payload.plain) {
-    merged = mergeStates(payload.plain, pending);
-  }
 
-  cachedState = merged;
-  stateLocked = false;
-  await clearPendingState();
-  await saveState(cachedState);
+    cachedState = merged;
+    stateLocked = false;
+    await clearPendingState();
+
+    // We must call the internal save logic directly or ensure saveState doesn't deadlock.
+    // Since saveState waits for reconciliationLock, calling it here would deadlock.
+    // So we duplicate the save logic or extract a lower-level save.
+    // For simplicity, let's just do the save here since we know the state is unlocked.
+    const encrypted = await encryptPayload(cachedState);
+    await chrome.storage.local.set({ [STATE_KEY]: encrypted });
+
+  } finally {
+    releaseLock();
+  }
 }
 
 async function unlockAndReconcile(passkey) {
@@ -726,6 +751,25 @@ function handleMessage(message, sender, sendResponse) {
             }
           }
         }
+        sendResponse({ ok: true });
+        break;
+      }
+      case 'RESUME_ALL': {
+        const state = await loadState();
+        if (!state || !state.suspendedTabs) {
+          sendResponse({ ok: true });
+          break;
+        }
+        const entries = Object.entries(state.suspendedTabs);
+        for (const [tabIdStr, entry] of entries) {
+          const tabId = Number(tabIdStr);
+          // We don't focus on individual tabs when resuming all
+          const resumed = await resumeSuspendedTab(tabId, entry, { focus: false });
+          if (resumed) {
+            delete state.suspendedTabs[tabId];
+          }
+        }
+        await saveState(state);
         sendResponse({ ok: true });
         break;
       }

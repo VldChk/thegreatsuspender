@@ -15,19 +15,9 @@ const unlockedPanel = document.getElementById('unlockedPanel');
 const resetEncryptionBtn = document.getElementById('resetEncryptionBtn');
 const encryptionHintEl = document.getElementById('encryptionHint');
 
-const fallbackSettings = {
-  autoSuspendMinutes: 30,
-  excludePinned: true,
-  excludeAudible: true,
-  excludeActive: true,
-  whitelist: [],
-  unsuspendMethod: 'activate',
-  encryption: {
-    enabled: true,
-    iterations: 150000,
-    cloudBackupEnabled: true,
-  },
-};
+import { defaultSettings } from './settings.js';
+
+const fallbackSettings = { ...defaultSettings };
 
 let currentSettings = { ...fallbackSettings };
 
@@ -74,13 +64,26 @@ function applyEncryptionStatus(status) {
   cloudBackupEl.checked = !!status.cloudBackupEnabled;
 
   if (status.locked) {
-    statusDiv.textContent = 'Status: Locked - passkey required';
-    statusDiv.style.color = '#a11';
-    lockedPanel.style.display = 'block';
-    unlockedPanel.style.display = 'none';
+    if (status.reason === 'corrupt-key') {
+      statusDiv.textContent = 'Status: Error - Encryption key corrupted';
+      statusDiv.style.color = '#d9534f';
+      lockedPanel.style.display = 'none';
+      unlockedPanel.style.display = 'none';
+      encryptionHintEl.textContent = 'The encryption key is corrupted or invalid. You must reset encryption to continue.';
+      // Highlight reset button
+      resetEncryptionBtn.style.border = '2px solid #d9534f';
+      resetEncryptionBtn.style.animation = 'pulse 2s infinite';
+    } else {
+      statusDiv.textContent = 'Status: Locked - passkey required';
+      statusDiv.style.color = '#a11';
+      lockedPanel.style.display = 'block';
+      unlockedPanel.style.display = 'none';
+      encryptionHintEl.textContent = 'Enter your passkey to unlock your data.';
+      resetEncryptionBtn.style.border = '';
+      resetEncryptionBtn.style.animation = '';
+    }
     setBtn.disabled = true;
     removeBtn.disabled = true;
-    encryptionHintEl.textContent = 'Enter your passkey to unlock your data.';
     return;
   }
 

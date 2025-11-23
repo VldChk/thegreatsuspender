@@ -1,34 +1,128 @@
+:root {
+  --primary-color: #3b82f6;
+  --primary-hover: #2563eb;
+  --secondary-color: #64748b;
+  --secondary-hover: #475569;
+  --background-color: #f8fafc;
+  --surface-color: #ffffff;
+  --text-main: #1e293b;
+  --text-muted: #64748b;
+  --border-color: #e2e8f0;
+  --radius-md: 8px;
+  --radius-sm: 4px;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
+
 body {
-  font-family: system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   margin: 0;
-  padding: 12px;
-  min-width: 260px;
-  background: #f5f5f5;
-  color: #222;
+  padding: 16px;
+  width: 320px;
+  background-color: var(--background-color);
+  color: var(--text-main);
 }
 
-header h1 {
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+h1 {
   font-size: 16px;
-  margin: 0 0 8px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-main);
 }
 
-button {
+.icon-btn {
+  background: none;
+  border: none;
+  padding: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.icon-btn:hover {
+  background-color: #e2e8f0;
+  color: var(--text-main);
+}
+
+.btn {
   display: block;
   width: 100%;
-  margin-bottom: 8px;
-  padding: 8px;
+  padding: 8px 12px;
   font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: 8px;
+  text-align: center;
 }
 
-#status {
-  min-height: 24px;
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: var(--primary-hover);
+}
+
+.btn-secondary {
+  background-color: white;
+  border-color: var(--border-color);
+  color: var(--text-main);
+}
+
+.btn-secondary:hover {
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.btn-outline {
+  background-color: transparent;
+  border-color: var(--border-color);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.btn-outline:hover {
+  border-color: var(--text-muted);
+  color: var(--text-main);
+}
+
+.divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 12px 0;
+}
+
+.status-message {
   font-size: 12px;
-  color: #444;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 8px 0;
+  min-height: 18px;
 }
 
 #suspendedList h2 {
-  font-size: 14px;
-  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 16px 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 #tabs {
@@ -38,30 +132,39 @@ button {
 }
 
 #tabs li {
+  background: var(--surface-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px;
   margin-bottom: 6px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  box-shadow: var(--shadow-sm);
 }
 
 #tabs span {
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-main);
 }
 
 #tabs button {
   flex: none;
   width: auto;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: 11px;
+  background-color: #f1f5f9;
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  border-radius: 3px;
+  margin: 0;
 }
 
-.hint {
-  font-size: 11px;
-  color: #666;
-  margin-top: 12px;
+#tabs button:hover {
+  background-color: #e2e8f0;
 }

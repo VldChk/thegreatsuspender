@@ -8,87 +8,120 @@
 </head>
 
 <body>
-  <main>
-    <h1>Local Tab Suspender</h1>
-    <form id="settingsForm">
-      <section>
-        <label>
-          Auto-suspend after
-          <input type="number" id="autoMinutes" min="1" step="1" /> minutes
-        </label>
-      </section>
-      <section>
-        <label><input type="checkbox" id="excludeActive" /> Skip active tab</label>
-        <label><input type="checkbox" id="excludePinned" /> Skip pinned tabs</label>
-        <label><input type="checkbox" id="excludeAudible" /> Skip audible tabs</label>
-      </section>
-      <section>
-        <label for="unsuspendMethod">Unsuspend behaviour</label>
-        <select id="unsuspendMethod">
-          <option value="activate">When the tab is focused</option>
-          <option value="manual">Only after clicking inside the tab</option>
-        </select>
-      </section>
-      <section>
-        <label for="whitelist">Never suspend these URL patterns (one per line)</label>
-        <textarea id="whitelist" rows="5" placeholder="https://mail.google.com/*"></textarea>
-      </section>
-      <section>
-        <h2>Encrypted session log</h2>
-        <p class="hint">
-          Your data is encrypted by default. You can optionally set a passphrase for extra security.
-        </p>
-        <div id="encryptionStatus" style="margin-bottom: 10px; font-weight: bold;"></div>
-        <label><input type="checkbox" id="cloudBackup" /> Back up the encryption key to Chrome Sync</label>
-        <div id="lockedPanel" style="margin-top: 10px; display: none;">
-          <p class="hint">Enter your passkey to unlock and access your history.</p>
-          <label>
-            <input type="password" id="unlockPassphrase" placeholder="Passkey to unlock"
-              autocomplete="current-password" />
-          </label>
-          <div class="actions" style="justify-content: flex-start; margin-top: 5px;">
-            <button type="button" id="unlockBtn">Unlock</button>
+  <div class="container">
+    <header>
+      <h1>Local Tab Suspender</h1>
+    </header>
+
+    <main>
+      <form id="settingsForm">
+        <!-- General Settings Card -->
+        <div class="card">
+          <h2>General Settings</h2>
+
+          <div class="form-group">
+            <label for="autoMinutes">Auto-suspend after (minutes)</label>
+            <input type="number" id="autoMinutes" min="1" step="1" class="form-input" />
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="excludeActive" />
+              <span>Never suspend active tab</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="excludePinned" />
+              <span>Never suspend pinned tabs</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="excludeAudible" />
+              <span>Never suspend audible tabs</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="unsuspendMethod">Unsuspend behaviour</label>
+            <select id="unsuspendMethod" class="form-select">
+              <option value="activate">Automatically when tab is focused</option>
+              <option value="manual">Manually when clicking inside the tab</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="whitelist">Never suspend these URL patterns (one per line)</label>
+            <textarea id="whitelist" rows="4" class="form-textarea" placeholder="https://mail.google.com/*"></textarea>
           </div>
         </div>
-        <div id="unlockedPanel" style="margin-top: 10px;">
-          <label>
-            <input type="password" id="passphrase" placeholder="Set a passphrase (optional)"
-              autocomplete="current-password" />
-          </label>
-          <div class="actions" style="justify-content: flex-start; margin-top: 5px;">
-            <button type="button" id="setPassphraseBtn">Set Passphrase</button>
-            <button type="button" id="removePassphraseBtn" style="display: none; background-color: #d9534f;">Remove
-              Passphrase</button>
+
+        <!-- Data & Privacy Card -->
+        <div class="card">
+          <h2>Data & Privacy</h2>
+          <p class="card-description">
+            Your session history is encrypted locally. You can optionally set a passphrase for extra security.
+          </p>
+
+          <div id="encryptionStatus" class="status-indicator"></div>
+
+          <div class="form-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="cloudBackup" />
+              <span>Back up encryption key to Chrome Sync</span>
+            </label>
+          </div>
+
+          <!-- Locked State -->
+          <div id="lockedPanel" class="panel hidden">
+            <p class="hint">Enter your passkey to unlock and access your history.</p>
+            <div class="input-group">
+              <input type="password" id="unlockPassphrase" placeholder="Passkey to unlock"
+                autocomplete="current-password" class="form-input" />
+              <button type="button" id="unlockBtn" class="btn btn-primary">Unlock</button>
+            </div>
+          </div>
+
+          <!-- Unlocked State -->
+          <div id="unlockedPanel" class="panel">
+            <div class="input-group">
+              <input type="password" id="passphrase" placeholder="Set a passphrase (optional)"
+                autocomplete="current-password" class="form-input" />
+              <button type="button" id="setPassphraseBtn" class="btn btn-primary">Set Passphrase</button>
+              <button type="button" id="removePassphraseBtn" class="btn btn-danger hidden">Remove Passphrase</button>
+            </div>
+          </div>
+
+          <p class="hint" id="encryptionHint"></p>
+
+          <div class="form-actions">
+            <button type="button" id="resetEncryptionBtn" class="btn btn-danger-outline">Reset encrypted data</button>
           </div>
         </div>
-        <p class="hint" id="encryptionHint"></p>
-        <div class="actions" style="justify-content: flex-start; margin-top: 10px;">
-          <button type="button" id="resetEncryptionBtn" style="background-color: #d9534f;">Reset encrypted data</button>
+
+        <!-- Session History Card -->
+        <div class="card">
+          <h2>Session History</h2>
+          <p class="card-description">
+            Encrypted snapshots of your suspended tabs are saved automatically.
+          </p>
+          <ul id="snapshotList" class="snapshot-list"></ul>
         </div>
-      </section>
-      <section>
-        <h2>Session History</h2>
-        <p class="hint">
-          Encrypted snapshots of your suspended tabs are saved automatically. You can restore them here.
-        </p>
-        <ul id="snapshotList" class="snapshot-list"></ul>
-      </section>
-      <section>
-        <h2>Debug Logs</h2>
-        <p class="hint">
-          Download logs to help debug issues.
-        </p>
-        <div class="actions" style="justify-content: flex-start; gap: 10px;">
-          <button type="button" id="downloadLogs">Download Logs</button>
-          <button type="button" id="clearLogs">Clear Logs</button>
+
+        <!-- Advanced / Debug Card -->
+        <div class="card">
+          <h2>Advanced</h2>
+          <div class="form-actions">
+            <button type="button" id="downloadLogs" class="btn btn-secondary">Download Debug Logs</button>
+            <button type="button" id="clearLogs" class="btn btn-secondary">Clear Logs</button>
+          </div>
         </div>
-      </section>
-      <div class="actions">
-        <button type="submit">Save settings</button>
-      </div>
-    </form>
-    <p id="status" role="status"></p>
-  </main>
+
+        <!-- Sticky Footer for Save -->
+        <div class="sticky-footer">
+          <p id="status" role="status"></p>
+          <button type="submit" class="btn btn-primary btn-large">Save Settings</button>
+        </div>
+      </form>
+    </main>
+  </div>
   <script type="module" src="options.js"></script>
 </body>
 

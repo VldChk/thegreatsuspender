@@ -39,16 +39,32 @@
           Your data is encrypted by default. You can optionally set a passphrase for extra security.
         </p>
         <div id="encryptionStatus" style="margin-bottom: 10px; font-weight: bold;"></div>
-        <label>
-          <input type="password" id="passphrase" placeholder="Set a passphrase (optional)"
-            autocomplete="current-password" />
-        </label>
-        <div class="actions" style="justify-content: flex-start; margin-top: 5px;">
-          <button type="button" id="setPassphraseBtn">Set Passphrase</button>
-          <button type="button" id="removePassphraseBtn" style="display: none; background-color: #d9534f;">Remove
-            Passphrase</button>
+        <label><input type="checkbox" id="cloudBackup" /> Back up the encryption key to Chrome Sync</label>
+        <div id="lockedPanel" style="margin-top: 10px; display: none;">
+          <p class="hint">Enter your passkey to unlock and access your history.</p>
+          <label>
+            <input type="password" id="unlockPassphrase" placeholder="Passkey to unlock"
+              autocomplete="current-password" />
+          </label>
+          <div class="actions" style="justify-content: flex-start; margin-top: 5px;">
+            <button type="button" id="unlockBtn">Unlock</button>
+          </div>
+        </div>
+        <div id="unlockedPanel" style="margin-top: 10px;">
+          <label>
+            <input type="password" id="passphrase" placeholder="Set a passphrase (optional)"
+              autocomplete="current-password" />
+          </label>
+          <div class="actions" style="justify-content: flex-start; margin-top: 5px;">
+            <button type="button" id="setPassphraseBtn">Set Passphrase</button>
+            <button type="button" id="removePassphraseBtn" style="display: none; background-color: #d9534f;">Remove
+              Passphrase</button>
+          </div>
         </div>
         <p class="hint" id="encryptionHint"></p>
+        <div class="actions" style="justify-content: flex-start; margin-top: 10px;">
+          <button type="button" id="resetEncryptionBtn" style="background-color: #d9534f;">Reset encrypted data</button>
+        </div>
       </section>
       <section>
         <h2>Session History</h2>

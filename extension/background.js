@@ -1,59 +1,40 @@
-const SETTINGS_KEY = 'settings';
+import Logger from './logger.js';
+import {
+  initializeEncryption,
+  getCryptoKey,
+  isEncryptionLocked,
+  getEncryptionLockReason,
+  unlockWithPasskey as decryptWithPasskey,
+  setPasskey as persistPasskey,
+  removePasskey as clearPasskey,
+  setCloudBackupEnabled as updateCloudBackup,
+  clearSessionKey,
+  clearKeyRecords,
+  generateAndPersistDataKey,
+  getEncryptionStatusPayload,
+  loadKeyRecord,
+} from './encryption.js';
+import { ensureSettings, saveSettings as persistSettings, defaultSettings, SETTINGS_KEY } from './settings.js';
+import { sessionGet, sessionSet, sessionRemove } from './session.js';
+
 const STATE_KEY = 'suspenderState';
 const SESSION_LAST_ACTIVE_KEY = 'lastActive';
 const SESSION_PENDING_STATE_KEY = 'pendingSuspenderState';
 
-const defaultSettings = {
-  autoSuspendMinutes: 30,
-  excludePinned: true,
-  excludeAudible: true,
-  excludeActive: true,
-  whitelist: [],
-  unsuspendMethod: 'activate', // 'activate' | 'manual'
-  encryption: {
-    enabled: true,
-    salt: null,
-    iterations: 150000,
-  },
-};
-
-let cachedSettings = null;
 let cachedState = null;
-let cryptoKey = null;
 let lastActiveCache = {};
 let stateLocked = false;
-const sessionArea = chrome.storage?.session || null;
-const sessionFallback = {};
+function hasCryptoKey() {
+  return !!getCryptoKey();
+}
 
-// --- Logger ---
+function encryptionIsLocked() {
+  return isEncryptionLocked();
+}
 
-const Logger = {
-  async log(level, message, data = null) {
-    const entry = {
-      timestamp: new Date().toISOString(),
-      level,
-      message,
-      data: data instanceof Error ? { message: data.message, stack: data.stack } : data,
-    };
-    console[level](message, data || '');
-
-    try {
-      const stored = await chrome.storage.local.get('logs');
-      const logs = stored.logs || [];
-      logs.push(entry);
-      // Keep last 1000 logs
-      if (logs.length > 1000) {
-        logs.shift();
-      }
-      await chrome.storage.local.set({ logs });
-    } catch (err) {
-      console.error('Failed to save log', err);
-    }
-  },
-  info(message, data) { this.log('info', message, data); },
-  warn(message, data) { this.log('warn', message, data); },
-  error(message, data) { this.log('error', message, data); }
-};
+function encryptionReason() {
+  return getEncryptionLockReason();
+}
 
 // --- Snapshot Service ---
 
@@ -66,7 +47,7 @@ const SnapshotService = {
 
     // We only create snapshots if we have the key to encrypt them (if encryption is on)
     const settings = await ensureSettings();
-    if (settings.encryption.enabled && !cryptoKey) {
+    if (settings.encryption.enabled && (encryptionIsLocked() || !hasCryptoKey())) {
       Logger.warn('Skipping snapshot: Encryption enabled but key not available');
       return;
     }
@@ -123,7 +104,7 @@ const SnapshotService = {
     let restoredState;
     if (snapshot.data.ct) {
       // Encrypted snapshot
-      if (!cryptoKey) {
+      if (encryptionIsLocked() || !hasCryptoKey()) {
         throw new Error('Encryption key required to restore this snapshot');
       }
       restoredState = await decryptPayload(snapshot.data);
@@ -157,15 +138,7 @@ async function init() {
     await ensureSettings();
     await loadLastActive();
 
-    // Try to restore key from session
-    if (!cryptoKey) {
-      await restoreKeyFromSession();
-    }
-
-    // If still no key, try to load/generate device key
-    if (!cryptoKey) {
-      await ensureDeviceKey();
-    }
+    await initializeEncryption();
 
     // Only schedule if not already scheduled
     const alarm = await chrome.alarms.get('autoSuspend');
@@ -205,7 +178,6 @@ async function handleInstalled(details) {
   // onInstalled is a special case where we might want to force a reset
   if (details.reason === 'install') {
     await chrome.storage.local.set({ [SETTINGS_KEY]: defaultSettings });
-    cachedSettings = { ...defaultSettings };
     await saveState({ suspendedTabs: {} });
     await scheduleAutoSuspendAlarm(); // Force schedule on install
     await chrome.alarms.create('snapshotTimer', { periodInMinutes: 60 });
@@ -225,56 +197,33 @@ async function handleStartup() {
   await ready;
 }
 
-async function ensureSettings() {
-  if (cachedSettings) {
-    return cachedSettings;
-  }
-  const stored = await chrome.storage.local.get(SETTINGS_KEY);
-  if (!stored[SETTINGS_KEY]) {
-    cachedSettings = { ...defaultSettings };
-    await chrome.storage.local.set({ [SETTINGS_KEY]: cachedSettings });
-  } else {
-    cachedSettings = {
-      ...defaultSettings,
-      ...stored[SETTINGS_KEY],
-      encryption: {
-        ...defaultSettings.encryption,
-        ...(stored[SETTINGS_KEY].encryption || {}),
-        enabled: true,
-      },
-    };
-    await chrome.storage.local.set({ [SETTINGS_KEY]: cachedSettings });
-  }
-  return cachedSettings;
-}
-
 async function saveSettings(nextSettings) {
-  cachedSettings = {
+  const merged = {
     ...defaultSettings,
     ...nextSettings,
     encryption: {
       ...defaultSettings.encryption,
       ...(nextSettings.encryption || {}),
       enabled: true,
+      cloudBackupEnabled: nextSettings.encryption?.cloudBackupEnabled ?? defaultSettings.encryption.cloudBackupEnabled,
     },
   };
-  await chrome.storage.local.set({ [SETTINGS_KEY]: cachedSettings });
+  await persistSettings(merged);
   await scheduleAutoSuspendAlarm(); // Reschedule when settings change
 }
 
 async function loadState() {
+  if (encryptionIsLocked() || !hasCryptoKey()) {
+    stateLocked = true;
+    cachedState = await loadPendingState();
+    return cachedState;
+  }
   if (cachedState) {
     return cachedState;
   }
-  const settings = await ensureSettings();
   const stored = await chrome.storage.local.get(STATE_KEY);
   const payload = stored[STATE_KEY];
   if (payload && payload.ct) {
-    if (!cryptoKey) {
-      stateLocked = true;
-      cachedState = await loadPendingState();
-      return cachedState;
-    }
     try {
       cachedState = await decryptPayload(payload);
       stateLocked = false;
@@ -288,13 +237,8 @@ async function loadState() {
     cachedState = payload.plain;
     stateLocked = false;
   } else {
-    if (settings.encryption.enabled && !cryptoKey) {
-      stateLocked = true;
-      cachedState = await loadPendingState();
-    } else {
-      cachedState = { suspendedTabs: {} };
-      stateLocked = false;
-    }
+    cachedState = { suspendedTabs: {} };
+    stateLocked = false;
   }
   return cachedState;
 }
@@ -303,7 +247,7 @@ async function saveState(state) {
   cachedState = state;
   const settings = await ensureSettings();
   if (settings.encryption.enabled) {
-    if (!cryptoKey) {
+    if (encryptionIsLocked() || !hasCryptoKey()) {
       stateLocked = true;
       await savePendingState(state);
       return;
@@ -334,28 +278,6 @@ function matchesWhitelist(url, whitelist) {
       return false;
     }
   });
-}
-
-async function sessionGet(key) {
-  if (sessionArea) {
-    return sessionArea.get(key);
-  }
-  return { [key]: sessionFallback[key] };
-}
-
-async function sessionSet(key, value) {
-  if (sessionArea) {
-    await sessionArea.set({ [key]: value });
-  } else {
-    sessionFallback[key] = value;
-  }
-}
-
-async function sessionRemove(key) {
-  if (sessionArea) {
-    await sessionArea.remove(key);
-  }
-  delete sessionFallback[key];
 }
 
 async function loadPendingState() {
@@ -650,122 +572,43 @@ async function resumeSuspendedTab(tabId, metadata, { focus = true } = {}) {
 }
 
 async function encryptPayload(data) {
-  if (!cryptoKey) {
+  const key = getCryptoKey();
+  if (!key) {
     throw new Error('Encryption key not available');
   }
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoded = new TextEncoder().encode(JSON.stringify(data));
-  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, encoded);
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
   return { iv: Array.from(iv), ct: Array.from(new Uint8Array(cipher)) };
 }
 
 async function decryptPayload(payload) {
-  if (!cryptoKey) {
+  const key = getCryptoKey();
+  if (!key) {
     throw new Error('Encryption key not available');
   }
   const iv = new Uint8Array(payload.iv);
   const ct = new Uint8Array(payload.ct);
-  const plainBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ct);
+  const plainBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
   const text = new TextDecoder().decode(plainBuffer);
   return JSON.parse(text);
 }
 
-async function ensureCryptoKey(passphrase) {
-  const settings = await ensureSettings();
-  let salt = settings.encryption.salt;
-  if (!salt) {
-    salt = Array.from(crypto.getRandomValues(new Uint8Array(16)));
-    await saveSettings({
-      ...settings,
-      encryption: {
-        ...settings.encryption,
-        salt,
-      },
-    });
-  }
-  const saltBytes = new Uint8Array(salt);
-  const baseKey = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(passphrase),
-    'PBKDF2',
-    false,
-    ['deriveKey']
-  );
-  cryptoKey = await crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: saltBytes,
-      iterations: settings.encryption.iterations,
-      hash: 'SHA-256',
-    },
-    baseKey,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt', 'exportKey']
-  );
-
-  // Save key to session storage for persistence across SW restarts
-  await saveKeyToSession(cryptoKey);
-  // Remove device key if switching to passphrase
-  await chrome.storage.local.remove('deviceKey');
-
-  await reencryptState();
-}
-
-async function ensureDeviceKey() {
-  const settings = await ensureSettings();
-  // If user has a salt, they are using a passphrase, so don't use device key
-  if (settings.encryption.salt) {
-    return;
-  }
-
-  const stored = await chrome.storage.local.get('deviceKey');
-  if (stored.deviceKey) {
-    try {
-      cryptoKey = await crypto.subtle.importKey(
-        'jwk',
-        stored.deviceKey,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt', 'exportKey']
-      );
-      await saveKeyToSession(cryptoKey);
-      return;
-    } catch (err) {
-      Logger.warn('Failed to import device key', err);
-    }
-  }
-
-  // Generate new device key
-  cryptoKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt', 'exportKey']
-  );
-  const jwk = await crypto.subtle.exportKey('jwk', cryptoKey);
-  await chrome.storage.local.set({ deviceKey: jwk });
-  await saveKeyToSession(cryptoKey);
-  Logger.info('Generated new device encryption key');
-}
-
-async function reencryptState() {
+async function reconcilePendingStateAfterUnlock() {
   const stored = await chrome.storage.local.get(STATE_KEY);
   const payload = stored[STATE_KEY];
   const pending = await loadPendingState();
-  let merged = { suspendedTabs: {} };
+  let merged = mergeStates({ suspendedTabs: {} }, pending);
 
-  // Try to decrypt with CURRENT key (which is already set)
-  // Note: This logic assumes we are re-encrypting FROM a state that we can read.
-  // But if we just switched keys, we might not be able to read the old state unless we decrypted it BEFORE switching.
-  // Ideally, the UI should handle "Decrypt old -> Switch Key -> Encrypt new".
-  // For simplicity here, we assume the state is either plain or we accept starting fresh/merging pending.
-
-  if (payload && payload.plain) {
+  if (payload && payload.ct) {
+    try {
+      const decrypted = await decryptPayload(payload);
+      merged = mergeStates(decrypted, pending);
+    } catch (err) {
+      Logger.warn('Failed to decrypt stored state after unlock', err);
+    }
+  } else if (payload && payload.plain) {
     merged = mergeStates(payload.plain, pending);
-  } else {
-    // If it was encrypted with a DIFFERENT key, we can't read it now.
-    // We just use pending state.
-    merged = pending;
   }
 
   cachedState = merged;
@@ -774,49 +617,27 @@ async function reencryptState() {
   await saveState(cachedState);
 }
 
-async function saveKeyToSession(key) {
-  try {
-    const jwk = await crypto.subtle.exportKey('jwk', key);
-    await sessionSet('cryptoKey', jwk);
-  } catch (err) {
-    Logger.warn('Failed to save key to session', err);
+async function unlockAndReconcile(passkey) {
+  const result = await decryptWithPasskey(passkey);
+  if (result?.ok) {
+    await reconcilePendingStateAfterUnlock();
   }
+  return result;
 }
 
-async function restoreKeyFromSession() {
-  try {
-    const stored = await sessionGet('cryptoKey');
-    const jwk = stored.cryptoKey;
-    if (jwk) {
-      cryptoKey = await crypto.subtle.importKey(
-        'jwk',
-        jwk,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt']
-      );
-    }
-  } catch (err) {
-    Logger.warn('Failed to restore key from session', err);
-  }
-}
-
-async function clearCryptoKey() {
-  // Clearing crypto key means switching back to device key (or no key if disabled, but we enforce enabled)
-  cryptoKey = null;
-  await sessionRemove('cryptoKey');
+async function resetEncryption() {
+  await clearSessionKey();
+  await clearKeyRecords();
+  cachedState = null;
+  stateLocked = false;
+  await chrome.storage.local.remove([STATE_KEY, 'backups']);
+  await clearPendingState();
 
   const settings = await ensureSettings();
-  await saveSettings({
-    ...settings,
-    encryption: {
-      ...settings.encryption,
-      salt: null, // Remove salt to indicate no passphrase
-    },
-  });
-
-  await ensureDeviceKey();
-  await reencryptState();
+  await generateAndPersistDataKey(settings.encryption.cloudBackupEnabled);
+  cachedState = { suspendedTabs: {} };
+  await saveState(cachedState);
+  return { ok: true };
 }
 
 function handleMessage(message, sender, sendResponse) {
@@ -830,23 +651,41 @@ function handleMessage(message, sender, sendResponse) {
         sendResponse(settings);
         break;
       }
+      case 'GET_ENCRYPTION_STATUS': {
+        const settings = await ensureSettings();
+        const record = await loadKeyRecord(settings.encryption.cloudBackupEnabled);
+        const payload = getEncryptionStatusPayload(settings, record);
+        sendResponse(payload);
+        break;
+      }
       case 'SAVE_SETTINGS': {
         await saveSettings(message.payload);
         sendResponse({ ok: true });
         break;
       }
-      case 'SET_PASSPHRASE': {
-        if (message.passphrase) {
-          await ensureCryptoKey(message.passphrase);
-          await loadState();
-          if (cachedState) {
-            await saveState(cachedState);
-          }
-          sendResponse({ ok: true });
-        } else {
-          await clearCryptoKey();
-          sendResponse({ ok: true });
-        }
+      case 'UNLOCK_WITH_PASSKEY': {
+        const result = await unlockAndReconcile(message.passkey);
+        sendResponse(result);
+        break;
+      }
+      case 'SET_PASSKEY': {
+        const result = await persistPasskey(message.passkey);
+        sendResponse(result);
+        break;
+      }
+      case 'REMOVE_PASSKEY': {
+        const result = await clearPasskey();
+        sendResponse(result);
+        break;
+      }
+      case 'SET_CLOUD_BACKUP': {
+        const result = await updateCloudBackup(message.enabled);
+        sendResponse(result);
+        break;
+      }
+      case 'RESET_ENCRYPTION': {
+        const result = await resetEncryption();
+        sendResponse(result);
         break;
       }
       case 'SUSPEND_CURRENT': {
@@ -892,8 +731,8 @@ function handleMessage(message, sender, sendResponse) {
       }
       case 'GET_STATE': {
         const state = await loadState();
-        if (stateLocked) {
-          sendResponse({ locked: true });
+        if (stateLocked || encryptionIsLocked()) {
+          sendResponse({ locked: true, reason: encryptionReason() });
         } else {
           sendResponse({ locked: false, state });
         }
@@ -901,7 +740,7 @@ function handleMessage(message, sender, sendResponse) {
       }
       case 'SUSPENDED_VIEW_INFO': {
         const state = await loadState();
-        if (!state) {
+        if (!state || stateLocked || encryptionIsLocked()) {
           sendResponse({ locked: true });
           break;
         }
@@ -952,11 +791,19 @@ function handleMessage(message, sender, sendResponse) {
         break;
       }
       case 'GET_SNAPSHOTS': {
+        if (encryptionIsLocked() || !hasCryptoKey()) {
+          sendResponse({ locked: true, reason: encryptionReason() });
+          break;
+        }
         const snapshots = await SnapshotService.getSnapshots();
         sendResponse({ snapshots });
         break;
       }
       case 'RESTORE_SNAPSHOT': {
+        if (encryptionIsLocked() || !hasCryptoKey()) {
+          sendResponse({ ok: false, locked: true, error: 'locked' });
+          break;
+        }
         try {
           await SnapshotService.restoreSnapshot(message.snapshotId);
           sendResponse({ ok: true });

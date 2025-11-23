@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <title>Local Tab Suspender - Options</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+
+<body>
+  <main>
+    <h1>Local Tab Suspender</h1>
+    <form id="settingsForm">
+      <section>
+        <label>
+          Auto-suspend after
+          <input type="number" id="autoMinutes" min="1" step="1" /> minutes
+        </label>
+      </section>
+      <section>
+        <label><input type="checkbox" id="excludeActive" /> Skip active tab</label>
+        <label><input type="checkbox" id="excludePinned" /> Skip pinned tabs</label>
+        <label><input type="checkbox" id="excludeAudible" /> Skip audible tabs</label>
+      </section>
+      <section>
+        <label for="unsuspendMethod">Unsuspend behaviour</label>
+        <select id="unsuspendMethod">
+          <option value="activate">When the tab is focused</option>
+          <option value="manual">Only after clicking inside the tab</option>
+        </select>
+      </section>
+      <section>
+        <label for="whitelist">Never suspend these URL patterns (one per line)</label>
+        <textarea id="whitelist" rows="5" placeholder="https://mail.google.com/*"></textarea>
+      </section>
+      <section>
+        <h2>Encrypted session log</h2>
+        <p class="hint">
+          Your data is encrypted by default. You can optionally set a passphrase for extra security.
+        </p>
+        <div id="encryptionStatus" style="margin-bottom: 10px; font-weight: bold;"></div>
+        <label>
+          <input type="password" id="passphrase" placeholder="Set a passphrase (optional)"
+            autocomplete="current-password" />
+        </label>
+        <div class="actions" style="justify-content: flex-start; margin-top: 5px;">
+          <button type="button" id="setPassphraseBtn">Set Passphrase</button>
+          <button type="button" id="removePassphraseBtn" style="display: none; background-color: #d9534f;">Remove
+            Passphrase</button>
+        </div>
+        <p class="hint" id="encryptionHint"></p>
+      </section>
+      <section>
+        <h2>Session History</h2>
+        <p class="hint">
+          Encrypted snapshots of your suspended tabs are saved automatically. You can restore them here.
+        </p>
+        <ul id="snapshotList" class="snapshot-list"></ul>
+      </section>
+      <section>
+        <h2>Debug Logs</h2>
+        <p class="hint">
+          Download logs to help debug issues.
+        </p>
+        <div class="actions" style="justify-content: flex-start; gap: 10px;">
+          <button type="button" id="downloadLogs">Download Logs</button>
+          <button type="button" id="clearLogs">Clear Logs</button>
+        </div>
+      </section>
+      <div class="actions">
+        <button type="submit">Save settings</button>
+      </div>
+    </form>
+    <p id="status" role="status"></p>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+
+</html>

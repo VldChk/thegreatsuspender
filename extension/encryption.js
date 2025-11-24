@@ -43,7 +43,7 @@ export async function generateDataKey() {
   return crypto.subtle.generateKey(
     { name: 'AES-GCM', length: 256 },
     true,
-    ['encrypt', 'decrypt', 'exportKey']
+    ['encrypt', 'decrypt']
   );
 }
 
@@ -59,7 +59,7 @@ export async function importKeyBase64(b64) {
     bytes,
     { name: 'AES-GCM', length: 256 },
     true,
-    ['encrypt', 'decrypt', 'exportKey']
+    ['encrypt', 'decrypt']
   );
 }
 
@@ -118,7 +118,7 @@ export async function unwrapDataKey(passkey, record) {
     raw,
     { name: 'AES-GCM', length: 256 },
     true,
-    ['encrypt', 'decrypt', 'exportKey']
+    ['encrypt', 'decrypt']
   );
   await saveKeyToSession(cryptoKey);
   encryptionLocked = false;
@@ -145,7 +145,7 @@ export async function restoreKeyFromSession() {
         jwk,
         { name: 'AES-GCM', length: 256 },
         false,
-        ['encrypt', 'decrypt', 'exportKey']
+        ['encrypt', 'decrypt']
       );
       encryptionLocked = false;
       encryptionLockReason = null;

@@ -14,6 +14,7 @@ const lockedPanel = document.getElementById('lockedPanel');
 const unlockedPanel = document.getElementById('unlockedPanel');
 const resetEncryptionBtn = document.getElementById('resetEncryptionBtn');
 const encryptionHintEl = document.getElementById('encryptionHint');
+const snapshotListEl = document.getElementById('snapshotList');
 
 import { defaultSettings } from './settings.js';
 
@@ -84,6 +85,7 @@ function applyEncryptionStatus(status) {
     }
     setBtn.disabled = true;
     removeBtn.disabled = true;
+    snapshotListEl.innerHTML = '<li class="empty-state">Unlock to view session history.</li>';
     return;
   }
 
@@ -111,6 +113,8 @@ function applyEncryptionStatus(status) {
       ? 'Your data is encrypted locally; the key is backed up to Chrome Sync.'
       : 'Your data is encrypted locally; the key stays on this device.';
   }
+
+  loadSnapshots();
 }
 
 async function refreshEncryptionStatus() {
@@ -126,6 +130,111 @@ async function refreshEncryptionStatus() {
     });
   }
 }
+
+// --- Session History ---
+
+async function loadSnapshots() {
+  try {
+    const response = await sendMessage('GET_SNAPSHOTS');
+    if (response.locked) {
+      snapshotListEl.innerHTML = '<li class="empty-state">Unlock to view session history.</li>';
+      return;
+    }
+    renderSnapshots(response.snapshots || []);
+  } catch (err) {
+    console.warn('Failed to load snapshots', err);
+    snapshotListEl.innerHTML = '<li class="empty-state">Failed to load history.</li>';
+  }
+}
+
+
+function renderSnapshots(snapshots) {
+  snapshotListEl.innerHTML = '';
+  if (!snapshots.length) {
+    snapshotListEl.innerHTML = '<li class="empty-state">No snapshots found.</li>';
+    return;
+  }
+
+  snapshots.forEach(snapshot => {
+    const li = document.createElement('li');
+    li.className = 'snapshot-item';
+
+    const header = document.createElement('div');
+    header.className = 'snapshot-header';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'btn-xs toggle-icon';
+    toggle.type = 'button';
+    toggle.textContent = '+';
+
+    const date = new Date(snapshot.timestamp);
+    const dateStr = formatSnapshotTimestamp(date);
+
+    const title = document.createElement('span');
+    title.className = 'snapshot-title';
+    title.textContent = `(${dateStr}) ${snapshot.tabCount} suspended tabs`;
+
+    const actions = document.createElement('div');
+    actions.className = 'snapshot-actions';
+
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn-xs';
+    openBtn.textContent = 'Open all';
+    openBtn.onclick = (e) => {
+      e.stopPropagation();
+      openSnapshot(snapshot.id, false);
+    };
+
+    const openUnsuspendBtn = document.createElement('button');
+    openUnsuspendBtn.className = 'btn-xs';
+    openUnsuspendBtn.textContent = 'Open all + unsuspend';
+    openUnsuspendBtn.onclick = (e) => {
+      e.stopPropagation();
+      openSnapshot(snapshot.id, true);
+    };
+
+    actions.appendChild(openBtn);
+    actions.appendChild(openUnsuspendBtn);
+
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      const collapsed = li.classList.toggle('collapsed');
+      toggle.textContent = collapsed ? '+' : '-';
+    };
+
+    header.appendChild(toggle);
+    header.appendChild(title);
+    header.appendChild(actions);
+
+    li.appendChild(header);
+    snapshotListEl.appendChild(li);
+  });
+}
+
+function formatSnapshotTimestamp(date) {
+  const pad = n => `${n}`.padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+async function openSnapshot(snapshotId, unsuspend) {
+  try {
+    const response = await sendMessage('OPEN_SNAPSHOT', { snapshotId, unsuspend });
+    if (response?.locked) {
+      showStatus('Unlock encryption to open snapshots.', true);
+      return;
+    }
+    if (response?.ok) {
+      const verb = unsuspend ? 'unsuspended' : 'suspended';
+      showStatus(`Opened ${response.opened || 0} tabs from snapshot (${verb}).`);
+    } else {
+      showStatus('Failed to open snapshot.', true);
+    }
+  } catch (err) {
+    console.warn('Failed to open snapshot', err);
+    showStatus('Failed to open snapshot.', true);
+  }
+}
+
 
 function collectSettingsFromForm() {
   return {

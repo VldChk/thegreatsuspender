@@ -116,22 +116,44 @@ h1 {
   min-height: 18px;
 }
 
-#suspendedList h2 {
+.hidden {
+  display: none !important;
+}
+
+.tabs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  padding: 8px 0;
+  user-select: none;
+}
+
+.tabs-header:hover {
+  opacity: 0.8;
+}
+
+.tabs-header h2 {
+  margin: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-muted);
-  margin: 16px 0 8px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-#tabs {
+.toggle-icon {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tabs-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
-#tabs li {
+.tab-item {
   background: var(--surface-color);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -142,29 +164,54 @@ h1 {
   align-items: center;
   gap: 8px;
   box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease;
 }
 
-#tabs span {
+.tab-item:hover {
+  border-color: var(--primary-color);
+}
+
+.tab-content {
   flex: 1;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tab-title {
   font-size: 13px;
+  color: var(--text-main);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-main);
+  font-weight: 500;
 }
 
-#tabs button {
+.tab-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tab-actions {
   flex: none;
-  width: auto;
+}
+
+.btn-sm {
   padding: 4px 8px;
   font-size: 11px;
   background-color: #f1f5f9;
   border: 1px solid var(--border-color);
   color: var(--text-main);
   border-radius: 3px;
-  margin: 0;
+  cursor: pointer;
 }
 
-#tabs button:hover {
+.btn-sm:hover {
   background-color: #e2e8f0;
+}
+
+#suspendedContext {
+  margin-bottom: 16px;
 }

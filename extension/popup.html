@@ -21,7 +21,13 @@
     </button>
   </header>
   <main>
-    <div class="actions-group">
+    <div id="suspendedContext" class="hidden">
+      <button id="unsuspendCurrent" class="btn btn-primary">Unsuspend this tab</button>
+      <button id="neverSuspendSite" class="btn btn-secondary">Never suspend this site</button>
+      <div class="divider"></div>
+    </div>
+
+    <div class="actions-group" id="actionsGroup">
       <button id="suspendCurrent" class="btn btn-primary">Suspend current tab</button>
       <button id="suspendInactive" class="btn btn-secondary">Suspend inactive tabs</button>
     </div>
@@ -33,8 +39,11 @@
     <div id="status" class="status-message"></div>
 
     <section id="suspendedList">
-      <h2>Suspended Tabs</h2>
-      <ul id="tabs"></ul>
+      <div class="tabs-header" id="tabsHeader">
+        <h2 id="tabsCount">0 suspended tabs</h2>
+        <span class="toggle-icon">+</span>
+      </div>
+      <ul id="tabs" class="tabs-list hidden"></ul>
     </section>
   </main>
   <script type="module" src="popup.js"></script>

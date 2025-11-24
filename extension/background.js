@@ -68,13 +68,14 @@ const SnapshotService = {
       };
 
       const stored = await chrome.storage.local.get('backups');
-      const backups = stored.backups || [];
+      let backups = stored.backups || [];
+      backups = pruneSnapshots(backups);
       backups.push(snapshot);
 
-      // Prune old backups (keep last 20)
-      if (backups.length > 20) {
-        backups.shift();
-      }
+      // Prune old backups (keep last 20 newest)
+      backups = backups
+        .filter(b => b.timestamp >= Date.now() - 7 * 24 * 60 * 60 * 1000)
+        .slice(-20);
 
       await chrome.storage.local.set({ backups });
       Logger.info('Snapshot created', { id: snapshot.id, tabCount: snapshot.tabCount });
@@ -85,7 +86,11 @@ const SnapshotService = {
 
   async getSnapshots() {
     const stored = await chrome.storage.local.get('backups');
-    return (stored.backups || []).map(b => ({
+    const pruned = pruneSnapshots(stored.backups || []);
+    if (pruned.length !== (stored.backups || []).length) {
+      await chrome.storage.local.set({ backups: pruned });
+    }
+    return pruned.map(b => ({
       id: b.id,
       timestamp: b.timestamp,
       tabCount: b.tabCount
@@ -121,8 +126,181 @@ const SnapshotService = {
     await saveState(cachedState);
     Logger.info('Snapshot restored', { id: snapshotId });
     return true;
+  },
+
+  async openSnapshot(snapshotId, unsuspend = false) {
+    const stored = await chrome.storage.local.get('backups');
+    const backups = stored.backups || [];
+    const snapshot = backups.find(b => b.id === snapshotId);
+
+    if (!snapshot) {
+      throw new Error('Snapshot not found');
+    }
+
+    let restoredState;
+    if (snapshot.data.ct) {
+      if (encryptionIsLocked() || !hasCryptoKey()) {
+        throw new Error('Encryption key required');
+      }
+      restoredState = await decryptPayload(snapshot.data);
+    } else if (snapshot.data.plain) {
+      restoredState = snapshot.data.plain;
+    } else {
+      throw new Error('Invalid snapshot format');
+    }
+
+    const tabsToOpen = Object.values(restoredState.suspendedTabs || {});
+    if (tabsToOpen.length === 0) {
+      return;
+    }
+
+    const win = await chrome.windows.create({ focused: true });
+
+    // Load current state to append new suspended tabs
+    const currentState = await loadState();
+
+    for (const entry of tabsToOpen) {
+      if (unsuspend) {
+        await chrome.tabs.create({ windowId: win.id, url: entry.url, active: false });
+      } else {
+        // Create as suspended
+        const token = crypto.randomUUID();
+        const suspendedUrl = new URL(chrome.runtime.getURL('suspended.html'));
+        suspendedUrl.searchParams.set('token', token);
+        suspendedUrl.searchParams.set('url', entry.url);
+        if (entry.title) suspendedUrl.searchParams.set('title', entry.title);
+        // We don't have favicon in metadata usually, but if we did:
+        // if (entry.favIconUrl) suspendedUrl.searchParams.set('favicon', entry.favIconUrl);
+
+        const newTab = await chrome.tabs.create({ windowId: win.id, url: suspendedUrl.toString(), active: false });
+
+        // Add to current state
+        currentState.suspendedTabs[newTab.id] = {
+          ...entry,
+          token,
+          windowId: win.id,
+          suspendedAt: Date.now(), // Reset timestamp to now as it's a new suspension
+          reason: 'restored-from-snapshot'
+        };
+      }
+    }
+
+    // Remove the default blank tab if we created others
+    const [blankTab] = await chrome.tabs.query({ windowId: win.id, url: 'chrome://newtab/' });
+    if (blankTab && tabsToOpen.length > 0) {
+      // Only remove if it's the only one, but we just added tabs.
+      // Actually chrome.windows.create with url would be better but we have multiple URLs.
+      // chrome.windows.create creates a default tab if no url.
+      await chrome.tabs.remove(blankTab.id);
+    }
+
+    if (!unsuspend) {
+      await saveState(currentState);
+    }
   }
 };
+
+function pruneSnapshots(list) {
+  if (!Array.isArray(list)) return [];
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return list.filter(item => typeof item.timestamp === 'number' && item.timestamp >= cutoff);
+}
+
+async function getSnapshotById(snapshotId) {
+  const stored = await chrome.storage.local.get('backups');
+  let backups = stored.backups || [];
+  backups = pruneSnapshots(backups);
+  const snapshot = backups.find(b => b.id === snapshotId);
+  if (backups.length !== (stored.backups || []).length) {
+    await chrome.storage.local.set({ backups });
+  }
+  return snapshot || null;
+}
+
+async function getSnapshotData(snapshot) {
+  if (!snapshot || !snapshot.data) {
+    throw new Error('Snapshot missing data');
+  }
+  if (snapshot.data.ct) {
+    const state = await decryptPayload(snapshot.data);
+    return state;
+  }
+  if (snapshot.data.plain) {
+    return snapshot.data.plain;
+  }
+  throw new Error('Invalid snapshot format');
+}
+
+async function openSnapshotTabs(snapshotId, { unsuspend = false } = {}) {
+  const snapshot = await getSnapshotById(snapshotId);
+  if (!snapshot) {
+    return { ok: false, error: 'not-found' };
+  }
+  const needsKey = !!snapshot.data?.ct;
+  if (needsKey && (encryptionIsLocked() || !hasCryptoKey())) {
+    return { ok: false, locked: true };
+  }
+  const state = await getSnapshotData(snapshot);
+  const entries = Object.values(state?.suspendedTabs || {});
+  if (!entries.length) {
+    return { ok: true, opened: 0 };
+  }
+
+  const win = await chrome.windows.create({ url: 'about:blank', focused: true });
+  const windowId = win.id;
+  const tabs = win.tabs || [];
+  let firstTabId = tabs[0]?.id || null;
+  let opened = 0;
+
+  // Load current state to append new suspended tabs
+  const currentState = await loadState();
+
+  for (const [index, entry] of entries.entries()) {
+    let urlToOpen;
+    let isSuspended = false;
+    let token = null;
+
+    if (unsuspend) {
+      urlToOpen = entry.url;
+    } else {
+      // Construct suspended URL directly
+      token = crypto.randomUUID();
+      const suspendedUrl = new URL(chrome.runtime.getURL('suspended.html'));
+      suspendedUrl.searchParams.set('token', token);
+      suspendedUrl.searchParams.set('url', entry.url);
+      if (entry.title) suspendedUrl.searchParams.set('title', entry.title);
+      if (entry.favIconUrl) suspendedUrl.searchParams.set('favicon', entry.favIconUrl);
+
+      urlToOpen = suspendedUrl.toString();
+      isSuspended = true;
+    }
+
+    let tab;
+    if (index === 0 && firstTabId) {
+      tab = await chrome.tabs.update(firstTabId, { url: urlToOpen, active: true });
+    } else {
+      tab = await chrome.tabs.create({ windowId, url: urlToOpen, active: false });
+    }
+    opened += 1;
+
+    if (isSuspended) {
+      // Add to current state manually since we bypassed suspendTab
+      currentState.suspendedTabs[tab.id] = {
+        ...entry,
+        token,
+        windowId,
+        suspendedAt: Date.now(),
+        reason: 'restored-from-snapshot'
+      };
+    }
+  }
+
+  if (!unsuspend) {
+    await saveState(currentState);
+  }
+
+  return { ok: true, opened };
+}
 
 // --- Initialization ---
 
@@ -269,20 +447,78 @@ async function saveState(state) {
 }
 
 function wildcardToRegExp(pattern) {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  const regexString = '^' + escaped.replace(/\*/g, '.*') + '$';
+  // Normalize pattern: remove protocol, www, trailing slash
+  let p = pattern.trim().toLowerCase();
+  p = p.replace(/^(https?:\/\/)?(www\.)?/, '');
+  if (p.endsWith('/')) {
+    p = p.slice(0, -1);
+  }
+
+  // Escape regex characters except *
+  const escaped = p.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+
+  // Convert * to .*
+  // If pattern ends with *, it matches prefix.
+  // If pattern starts with *, it matches suffix.
+  // If no *, we match exact domain or path prefix.
+
+  let regexString = escaped.replace(/\*/g, '.*');
+
+  // If it's just a domain like "leetcode.com", we want to match "leetcode.com" AND "leetcode.com/problems" AND "sub.leetcode.com"
+  // But we don't want "myleetcode.com"
+
+  // Simple heuristic: if no slash, assume domain match
+  if (!p.includes('/')) {
+    // Match exact domain or subdomain
+    // regex: (^|\.)leetcode\.com(\/|$)
+    regexString = `(^|\\.)${regexString}(\\/|$)`;
+  } else {
+    // Path match, anchor start
+    regexString = `^${regexString}`;
+  }
+
   return new RegExp(regexString);
 }
 
 function matchesWhitelist(url, whitelist) {
+  if (!url) return false;
+
+  // Normalize URL for matching: lower-case host/path, strip protocol and www
+  let normalized = '';
+  try {
+    const u = new URL(url);
+    const host = (u.hostname || '').toLowerCase().replace(/^www\./, '');
+    const path = (u.pathname || '').toLowerCase();
+    normalized = `${host}${path}`;
+  } catch (err) {
+    // Fallback: strip protocol/www manually
+    normalized = url.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '');
+  }
+
   return whitelist.some(pattern => {
     try {
-      return wildcardToRegExp(pattern).test(url);
+      return wildcardToRegExp(pattern).test(normalized);
     } catch (e) {
       Logger.warn('Invalid whitelist pattern', pattern, e);
       return false;
     }
   });
+}
+
+async function unsuspendWhitelistedTabs(whitelist) {
+  const state = await loadState();
+  if (!state || !state.suspendedTabs) return;
+
+  const entries = Object.entries(state.suspendedTabs);
+  for (const [tabIdStr, entry] of entries) {
+    if (matchesWhitelist(entry.url, whitelist)) {
+      const tabId = Number(tabIdStr);
+      Logger.info('Auto-unsuspending whitelisted tab', { tabId, url: entry.url });
+      await resumeSuspendedTab(tabId, entry, { focus: false });
+      delete state.suspendedTabs[tabId];
+    }
+  }
+  await saveState(state);
 }
 
 async function loadPendingState() {
@@ -684,7 +920,16 @@ function handleMessage(message, sender, sendResponse) {
         break;
       }
       case 'SAVE_SETTINGS': {
-        await saveSettings(message.payload);
+        const { payload } = message;
+        await saveSettings(payload);
+
+        // Check if we need to auto-unsuspend tabs based on new whitelist
+        if (payload.whitelist && payload.whitelist.length > 0) {
+          unsuspendWhitelistedTabs(payload.whitelist).catch(err => {
+            Logger.error('Failed to auto-unsuspend whitelisted tabs', err);
+          });
+        }
+
         sendResponse({ ok: true });
         break;
       }
@@ -853,6 +1098,16 @@ function handleMessage(message, sender, sendResponse) {
           sendResponse({ ok: true });
         } catch (err) {
           Logger.error('Restore failed', err);
+          sendResponse({ ok: false, error: err.message });
+        }
+        break;
+      }
+      case 'OPEN_SNAPSHOT': {
+        try {
+          const result = await openSnapshotTabs(message.snapshotId, { unsuspend: !!message.unsuspend });
+          sendResponse(result);
+        } catch (err) {
+          Logger.error('Open snapshot failed', err);
           sendResponse({ ok: false, error: err.message });
         }
         break;

@@ -41,6 +41,10 @@ function encryptionReason() {
 const SnapshotService = {
   async createSnapshot() {
     const state = await loadState();
+
+    // Validate state against actual open tabs to ensure we only snapshot truly suspended tabs
+    await validateState(state);
+
     if (!state || !state.suspendedTabs || Object.keys(state.suspendedTabs).length === 0) {
       return;
     }
@@ -546,6 +550,44 @@ function mergeStates(primary, secondary) {
   return merged;
 }
 
+async function validateState(state) {
+  if (!state || !state.suspendedTabs) return;
+
+  const tabIds = Object.keys(state.suspendedTabs).map(Number);
+  if (tabIds.length === 0) return;
+
+  let changed = false;
+  for (const tabId of tabIds) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const entry = state.suspendedTabs[tabId];
+
+      // Check if tab is actually suspended
+      if (entry.method === 'discard') {
+        if (!tab.discarded) {
+          // Tab is active/loaded, so it's not suspended
+          delete state.suspendedTabs[tabId];
+          changed = true;
+        }
+      } else if (entry.method === 'page') {
+        if (!tab.url.startsWith(chrome.runtime.getURL('suspended.html'))) {
+          // Tab is on a different page, so it's not suspended
+          delete state.suspendedTabs[tabId];
+          changed = true;
+        }
+      }
+    } catch (err) {
+      // Tab does not exist
+      delete state.suspendedTabs[tabId];
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await saveState(state);
+  }
+}
+
 async function handleTabActivated(activeInfo) {
   await ready;
   await markTabActive(activeInfo.tabId);
@@ -655,7 +697,14 @@ async function autoSuspendTick() {
     if (!(await shouldSuspendTab(tab, settings, now))) {
       continue;
     }
-    await suspendTab(tab, 'auto');
+    try {
+      await suspendTab(tab, 'auto');
+    } catch (err) {
+      // Ignore "No tab with id" errors as they are expected race conditions
+      if (!err.message.includes('No tab with id')) {
+        Logger.warn('Failed to auto-suspend tab', { tabId: tab.id, err });
+      }
+    }
   }
 }
 

@@ -19,22 +19,25 @@ if (titleParam) {
 if (urlParam) {
   hintEl.textContent = `Original URL: ${urlParam}`;
 }
+// Try to apply grayscale to the tab icon
 if (faviconParam) {
+  updateFavicon(faviconParam);
+}
+
+
+function updateFavicon(url) {
   const link = document.querySelector("link[rel~='icon']") || document.createElement('link');
   link.type = 'image/x-icon';
   link.rel = 'icon';
-  // Default to original first
-  link.href = faviconParam;
+  link.href = url;
   document.getElementsByTagName('head')[0].appendChild(link);
 
-  // Set the on-page logo
   const logoEl = document.getElementById('siteLogo');
   if (logoEl) {
-    logoEl.src = faviconParam;
+    logoEl.src = url;
   }
 
-  // Try to apply grayscale to the tab icon
-  getGrayscaleFavicon(faviconParam).then(grayUrl => {
+  getGrayscaleFavicon(url).then(grayUrl => {
     if (grayUrl) {
       link.href = grayUrl;
     }
@@ -101,6 +104,12 @@ async function loadInfo() {
       detailsEl.textContent = `${tabInfo.title || tabInfo.url}`;
       hintEl.textContent = `Original URL: ${tabInfo.url}`;
       document.title = tabInfo.title || 'Tab suspended';
+
+      // Use cached favicon if available, otherwise fall back to URL
+      const faviconSource = tabInfo.faviconDataUri || tabInfo.favIconUrl;
+      if (faviconSource) {
+        updateFavicon(faviconSource);
+      }
       return;
     }
   } catch (err) {

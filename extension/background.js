@@ -636,6 +636,11 @@ async function handleTabUpdated(tabId, changeInfo, tab) {
       return;
     }
     if (changeInfo.discarded) {
+      const settings = await ensureSettings();
+      // Only record discards we would intentionally suspend (eligibility rules + non-incognito)
+      if (tab.incognito || !(await shouldSuspendTab(tab, settings, Date.now()))) {
+        return;
+      }
       state.suspendedTabs[tabId] = {
         url: tab.url,
         title: tab.title,
@@ -733,6 +738,23 @@ async function shouldSuspendTab(tab, settings, now) {
   return now - lastActive >= threshold;
 }
 
+async function cacheFavicon(faviconUrl) {
+  if (!faviconUrl || faviconUrl.startsWith('data:')) return faviconUrl;
+  try {
+    const response = await fetch(faviconUrl);
+    const blob = await response.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    Logger.warn('Failed to cache favicon', { url: faviconUrl, err });
+    return null;
+  }
+}
+
 async function suspendTab(tab, reason) {
   const settings = await ensureSettings();
   if (settings.unsuspendMethod === 'manual') {
@@ -753,6 +775,12 @@ async function suspendViaDiscard(tab, reason) {
     }
     const state = await loadState();
     if (state) {
+      // Cache favicon if available
+      let faviconDataUri = null;
+      if (tab.favIconUrl) {
+        faviconDataUri = await cacheFavicon(tab.favIconUrl);
+      }
+
       state.suspendedTabs[tab.id] = {
         url: tab.url,
         title: tab.title,
@@ -760,6 +788,8 @@ async function suspendViaDiscard(tab, reason) {
         suspendedAt: Date.now(),
         method: 'discard',
         reason,
+        favIconUrl: tab.favIconUrl,
+        faviconDataUri // Store cached Data URI
       };
       await saveState(state);
     }
@@ -776,6 +806,13 @@ async function suspendViaPage(tab, reason) {
     Logger.warn('State locked; cannot record suspension');
     return false;
   }
+
+  // Cache favicon if available
+  let faviconDataUri = null;
+  if (tab.favIconUrl) {
+    faviconDataUri = await cacheFavicon(tab.favIconUrl);
+  }
+
   const token = crypto.randomUUID();
   const metadata = {
     url: tab.url,
@@ -785,6 +822,8 @@ async function suspendViaPage(tab, reason) {
     method: 'page',
     reason,
     token,
+    favIconUrl: tab.favIconUrl,
+    faviconDataUri // Store cached Data URI
   };
   state.suspendedTabs[tab.id] = metadata;
   await saveState(state);
@@ -1135,6 +1174,25 @@ function handleMessage(message, sender, sendResponse) {
         }
         const snapshots = await SnapshotService.getSnapshots();
         sendResponse({ snapshots });
+        break;
+      }
+      case 'GET_SNAPSHOT_DETAILS': {
+        if (encryptionIsLocked() || !hasCryptoKey()) {
+          sendResponse({ locked: true, reason: encryptionReason() });
+          break;
+        }
+        try {
+          const snapshot = await getSnapshotById(message.snapshotId);
+          if (!snapshot) {
+            sendResponse({ ok: false, error: 'not-found' });
+            break;
+          }
+          const state = await getSnapshotData(snapshot);
+          sendResponse({ ok: true, tabs: state.suspendedTabs });
+        } catch (err) {
+          Logger.error('Failed to get snapshot details', err);
+          sendResponse({ ok: false, error: err.message });
+        }
         break;
       }
       case 'RESTORE_SNAPSHOT': {

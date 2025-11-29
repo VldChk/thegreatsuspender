@@ -159,6 +159,9 @@ function renderSnapshots(snapshots) {
     const li = document.createElement('li');
     li.className = 'snapshot-item';
 
+    // Single source of truth for expanded/collapsed
+    let expanded = false;
+
     const header = document.createElement('div');
     header.className = 'snapshot-header';
 
@@ -196,19 +199,79 @@ function renderSnapshots(snapshots) {
     actions.appendChild(openBtn);
     actions.appendChild(openUnsuspendBtn);
 
-    toggle.onclick = (e) => {
-      e.stopPropagation();
-      const collapsed = li.classList.toggle('collapsed');
-      toggle.textContent = collapsed ? '+' : '-';
-    };
-
     header.appendChild(toggle);
     header.appendChild(title);
     header.appendChild(actions);
 
+    const details = document.createElement('div');
+    details.className = 'snapshot-details';
+    details.style.display = 'none';
+    details.innerHTML = '<p class="loading">Loading details...</p>';
+
     li.appendChild(header);
+    li.appendChild(details);
     snapshotListEl.appendChild(li);
+
+    let detailsLoaded = false;
+
+    toggle.onclick = async (e) => {
+      e.stopPropagation();
+      expanded = !expanded;
+      details.style.display = expanded ? 'block' : 'none';
+      toggle.textContent = expanded ? '-' : '+';
+
+      if (expanded && !detailsLoaded) {
+        try {
+          const response = await sendMessage('GET_SNAPSHOT_DETAILS', { snapshotId: snapshot.id });
+          if (response && response.ok && response.tabs) {
+            renderSnapshotDetails(details, response.tabs);
+            detailsLoaded = true;
+          } else {
+            details.innerHTML = '<p class="error">Failed to load details.</p>';
+          }
+        } catch (err) {
+          console.warn('Failed to fetch snapshot details', err);
+          details.innerHTML = '<p class="error">Error loading details.</p>';
+        }
+      }
+    };
   });
+}
+
+function renderSnapshotDetails(container, tabsMap) {
+  container.innerHTML = '';
+  const ul = document.createElement('ul');
+  ul.className = 'snapshot-tab-list';
+
+  const tabs = Object.values(tabsMap);
+  if (tabs.length === 0) {
+    container.innerHTML = '<p class="empty">No tabs in this snapshot.</p>';
+    return;
+  }
+
+  tabs.forEach(tab => {
+    const li = document.createElement('li');
+    li.className = 'snapshot-tab-item';
+
+    const link = document.createElement('a');
+    link.href = tab.url;
+    link.target = '_blank';
+    link.textContent = tab.title || tab.url;
+    link.className = 'snapshot-tab-link';
+
+    if (tab.favIconUrl) {
+      const icon = document.createElement('img');
+      icon.src = tab.favIconUrl;
+      icon.className = 'snapshot-tab-icon';
+      icon.onerror = () => { icon.style.display = 'none'; };
+      li.appendChild(icon);
+    }
+
+    li.appendChild(link);
+    ul.appendChild(li);
+  });
+
+  container.appendChild(ul);
 }
 
 function formatSnapshotTimestamp(date) {

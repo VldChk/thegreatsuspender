@@ -8,6 +8,7 @@ const whitelistEl = document.getElementById('whitelist');
 const unsuspendMethodEl = document.getElementById('unsuspendMethod');
 const passphraseEl = document.getElementById('passphrase');
 const cloudBackupEl = document.getElementById('cloudBackup');
+const embedOriginalUrlEl = document.getElementById('embedOriginalUrl');
 const unlockPassphraseEl = document.getElementById('unlockPassphrase');
 const unlockBtn = document.getElementById('unlockBtn');
 const lockedPanel = document.getElementById('lockedPanel');
@@ -15,6 +16,8 @@ const unlockedPanel = document.getElementById('unlockedPanel');
 const resetEncryptionBtn = document.getElementById('resetEncryptionBtn');
 const encryptionHintEl = document.getElementById('encryptionHint');
 const snapshotListEl = document.getElementById('snapshotList');
+const retryImportBtn = document.getElementById('retryImportBtn');
+const cloudWarningEl = document.getElementById('cloudWarning');
 
 import { defaultSettings } from './settings.js';
 
@@ -54,6 +57,7 @@ async function loadSettings() {
   unsuspendMethodEl.value = currentSettings.unsuspendMethod;
   whitelistEl.value = (currentSettings.whitelist || []).join('\n');
   cloudBackupEl.checked = !!currentSettings.encryption.cloudBackupEnabled;
+  embedOriginalUrlEl.checked = currentSettings.embedOriginalUrl !== false;
   await refreshEncryptionStatus();
 }
 
@@ -63,17 +67,27 @@ function applyEncryptionStatus(status) {
   const removeBtn = document.getElementById('removePassphraseBtn');
 
   cloudBackupEl.checked = !!status.cloudBackupEnabled;
+  if (cloudWarningEl) {
+    cloudWarningEl.classList.add('hidden');
+    cloudWarningEl.style.color = '#a11';
+  }
+  if (retryImportBtn) {
+    retryImportBtn.classList.add('hidden');
+  }
 
   if (status.locked) {
     if (status.reason === 'corrupt-key') {
       statusDiv.textContent = 'Status: Error - Encryption key corrupted';
       statusDiv.style.color = '#d9534f';
-      lockedPanel.style.display = 'none';
+      lockedPanel.style.display = 'block';
       unlockedPanel.style.display = 'none';
       encryptionHintEl.textContent = 'The encryption key is corrupted or invalid. You must reset encryption to continue.';
       // Highlight reset button
       resetEncryptionBtn.style.border = '2px solid #d9534f';
       resetEncryptionBtn.style.animation = 'pulse 2s infinite';
+      if (retryImportBtn) {
+        retryImportBtn.classList.remove('hidden');
+      }
     } else {
       statusDiv.textContent = 'Status: Locked - passkey required';
       statusDiv.style.color = '#a11';
@@ -112,6 +126,9 @@ function applyEncryptionStatus(status) {
     encryptionHintEl.textContent = status.cloudBackupEnabled
       ? 'Your data is encrypted locally; the key is backed up to Chrome Sync.'
       : 'Your data is encrypted locally; the key stays on this device.';
+    if (status.cloudBackupEnabled && !status.usingPasskey && cloudWarningEl) {
+      cloudWarningEl.classList.remove('hidden');
+    }
   }
 
   loadSnapshots();
@@ -213,6 +230,7 @@ function renderSnapshots(snapshots) {
     snapshotListEl.appendChild(li);
 
     let detailsLoaded = false;
+    let loadingTimeout;
 
     toggle.onclick = async (e) => {
       e.stopPropagation();
@@ -222,16 +240,47 @@ function renderSnapshots(snapshots) {
 
       if (expanded && !detailsLoaded) {
         try {
-          const response = await sendMessage('GET_SNAPSHOT_DETAILS', { snapshotId: snapshot.id });
-          if (response && response.ok && response.tabs) {
+          details.innerHTML = '<p class="loading">Loading details...</p>';
+          loadingTimeout = setTimeout(() => {
+            if (!detailsLoaded) {
+              details.innerHTML = '<p class="loading">Still loading…</p>';
+            }
+          }, 2000);
+          const responsePromise = sendMessage('GET_SNAPSHOT_DETAILS', { snapshotId: snapshot.id });
+          const response = await Promise.race([
+            responsePromise,
+            new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 10000))
+          ]);
+          clearTimeout(loadingTimeout);
+          if (response?.timeout) {
+            details.innerHTML = '<p class="error">Timed out. <button class="btn-xs retry-details">Retry</button></p>';
+            const retryBtn = details.querySelector('.retry-details');
+            retryBtn?.addEventListener('click', () => { detailsLoaded = false; toggle.click(); });
+            return;
+          }
+          if (response?.locked) {
+            details.innerHTML = '<p class="error">Unlock encryption to view this snapshot.</p>';
+          } else if (response && response.ok && response.tabs) {
             renderSnapshotDetails(details, response.tabs);
             detailsLoaded = true;
+          } else if (response?.error) {
+            details.innerHTML = `<p class="error">Failed to load details: ${response.error}</p>`;
+            const retryBtn = document.createElement('button');
+            retryBtn.className = 'btn-xs retry-details';
+            retryBtn.textContent = 'Retry';
+            retryBtn.addEventListener('click', () => { detailsLoaded = false; toggle.click(); });
+            details.appendChild(retryBtn);
           } else {
             details.innerHTML = '<p class="error">Failed to load details.</p>';
           }
         } catch (err) {
           console.warn('Failed to fetch snapshot details', err);
           details.innerHTML = '<p class="error">Error loading details.</p>';
+          const retryBtn = document.createElement('button');
+          retryBtn.className = 'btn-xs retry-details';
+          retryBtn.textContent = 'Retry';
+          retryBtn.addEventListener('click', () => { detailsLoaded = false; toggle.click(); });
+          details.appendChild(retryBtn);
         }
       }
     };
@@ -306,6 +355,7 @@ function collectSettingsFromForm() {
     excludePinned: excludePinnedEl.checked,
     excludeAudible: excludeAudibleEl.checked,
     unsuspendMethod: unsuspendMethodEl.value,
+    embedOriginalUrl: embedOriginalUrlEl.checked,
     whitelist: whitelistEl.value
       .split('\n')
       .map(line => line.trim())
@@ -399,6 +449,22 @@ unlockBtn.addEventListener('click', async () => {
     showStatus('Failed to unlock.', true);
   }
 });
+
+if (retryImportBtn) {
+  retryImportBtn.addEventListener('click', async () => {
+    try {
+      const result = await sendMessage('RETRY_IMPORT_KEY');
+      if (result?.ok) {
+        await refreshEncryptionStatus();
+        showStatus('Key import retried successfully.');
+      } else {
+        showStatus('Retry failed. You may need to reset encryption.', true);
+      }
+    } catch (err) {
+      showStatus('Retry failed.', true);
+    }
+  });
+}
 
 cloudBackupEl.addEventListener('change', async () => {
   try {

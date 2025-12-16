@@ -62,7 +62,13 @@ if (neverSuspendSiteBtn) {
       const newWhitelist = Array.from(new Set([...(settings.whitelist || []), domain]));
       const payload = { ...settings, whitelist: newWhitelist };
       await sendMessage('SAVE_SETTINGS', { payload });
-      await refreshState(`Added ${domain} to whitelist and unsuspended.`);
+      await refreshState(`Added "${domain}" to whitelist and unsuspended.`);
+      tabsHeaderEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const confirmation = document.createElement('div');
+      confirmation.className = 'status-message';
+      confirmation.textContent = `Whitelisted: ${domain}`;
+      statusEl.parentElement?.insertBefore(confirmation, statusEl.nextSibling);
+      setTimeout(() => confirmation.remove(), 2000);
       // Auto-unsuspend is handled by background on SAVE_SETTINGS
       setTimeout(() => window.close(), 1000);
     }
@@ -149,19 +155,20 @@ async function refreshState(message) {
     contentDiv.appendChild(titleSpan);
     contentDiv.appendChild(metaSpan);
 
-    contentDiv.addEventListener('click', async () => {
-      await chrome.tabs.update(tabIdNum, { active: true });
-      if (info.windowId) {
-        await chrome.windows.update(info.windowId, { focused: true });
+    const focusTab = async () => {
+      try {
+        await chrome.tabs.update(tabIdNum, { active: true });
+        if (info.windowId) {
+          await chrome.windows.update(info.windowId, { focused: true });
+        }
+      } catch (err) {
+        statusEl.textContent = 'Tab no longer exists. Removing from list.';
+        tabsListEl.removeChild(li);
       }
-    });
+    };
 
-    li.addEventListener('click', async () => {
-      await chrome.tabs.update(tabIdNum, { active: true });
-      if (info.windowId) {
-        await chrome.windows.update(info.windowId, { focused: true });
-      }
-    });
+    contentDiv.addEventListener('click', focusTab);
+    li.addEventListener('click', focusTab);
 
     const actionsDiv = document.createElement('div');
     actionsDiv.className = 'tab-actions';

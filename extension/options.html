@@ -67,6 +67,15 @@
               <input type="checkbox" id="cloudBackup" />
               <span>Back up encryption key to Chrome Sync</span>
             </label>
+            <p id="cloudWarning" class="hint hidden">Warning: Without a passkey, your data key is stored in Chrome Sync in plaintext.</p>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="embedOriginalUrl" />
+              <span>Embed original URL in suspended page for recovery (recommended)</span>
+            </label>
+            <p class="hint">Disabling hides URLs from history but prevents recovery if the extension is disabled.</p>
           </div>
 
           <!-- Locked State -->
@@ -77,6 +86,7 @@
                 autocomplete="current-password" class="form-input" />
               <button type="button" id="unlockBtn" class="btn btn-primary">Unlock</button>
             </div>
+            <button type="button" id="retryImportBtn" class="btn btn-secondary hidden">Retry key import</button>
           </div>
 
           <!-- Unlocked State -->

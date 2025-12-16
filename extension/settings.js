@@ -7,6 +7,7 @@ export const defaultSettings = {
   excludeActive: true,
   whitelist: [],
   unsuspendMethod: 'activate', // 'activate' | 'manual'
+  embedOriginalUrl: true, // Whether to include original URL in suspended page for recovery
   encryption: {
     enabled: true,
     iterations: 150000,

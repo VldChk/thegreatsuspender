@@ -143,6 +143,19 @@ wakeButton.addEventListener('click', async () => {
         detailsEl.textContent = 'Waking up...';
         return;
       }
+      if (response?.error === 'expired') {
+        wakeButton.disabled = false;
+        wakeButton.textContent = 'Open original URL';
+        detailsEl.textContent = 'This suspended link expired. Opening original URL instead.';
+      } else if (response?.error === 'used') {
+        wakeButton.disabled = false;
+        wakeButton.textContent = 'Open original URL';
+        detailsEl.textContent = 'This suspended link was already used. Opening original URL instead.';
+      } else if (response?.error === 'invalid-token') {
+        wakeButton.disabled = false;
+        wakeButton.textContent = 'Open original URL';
+        detailsEl.textContent = 'Unable to validate this suspended tab. Opening original URL instead.';
+      }
     } catch (err) {
       console.warn('Background unsuspend failed', err);
     }

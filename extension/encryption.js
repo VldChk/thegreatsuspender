@@ -239,6 +239,25 @@ export function markEncryptionLocked(reason = null) {
   encryptionLockReason = reason || null;
 }
 
+export async function retryImportPlaintextKey() {
+  const settings = await ensureSettings();
+  const record = await loadKeyRecord(settings.encryption.cloudBackupEnabled);
+  if (!record || record.usingPasskey || !record.dataKey) {
+    return { ok: false, error: 'no-plaintext-record' };
+  }
+  try {
+    cryptoKey = await importKeyBase64(record.dataKey);
+    encryptionLocked = false;
+    encryptionLockReason = null;
+    await saveKeyToSession(cryptoKey);
+    return { ok: true };
+  } catch (err) {
+    Logger.warn('Retry import of plaintext key failed', err);
+    markEncryptionLocked('corrupt-key');
+    return { ok: false, error: 'corrupt-key' };
+  }
+}
+
 export async function initializeEncryption() {
   const settings = await ensureSettings();
 

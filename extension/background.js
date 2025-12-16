@@ -13,6 +13,7 @@ import {
   generateAndPersistDataKey,
   getEncryptionStatusPayload,
   loadKeyRecord,
+  retryImportPlaintextKey,
 } from './encryption.js';
 import { ensureSettings, saveSettings as persistSettings, defaultSettings, SETTINGS_KEY } from './settings.js';
 import { sessionGet, sessionSet, sessionRemove } from './session.js';
@@ -20,10 +21,14 @@ import { sessionGet, sessionSet, sessionRemove } from './session.js';
 const STATE_KEY = 'suspenderState';
 const SESSION_LAST_ACTIVE_KEY = 'lastActive';
 const SESSION_PENDING_STATE_KEY = 'pendingSuspenderState';
+const SNAPSHOT_RETENTION_DAYS = 7;
+const SNAPSHOT_MAX = 20;
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const SNAPSHOT_PERIOD_MINUTES = 180;
 
 let cachedState = null;
 let lastActiveCache = {};
-let stateLocked = false;
+
 function hasCryptoKey() {
   return !!getCryptoKey();
 }
@@ -36,27 +41,37 @@ function encryptionReason() {
   return getEncryptionLockReason();
 }
 
+function stateIsLocked() {
+  return encryptionIsLocked() || !hasCryptoKey();
+}
+
 // --- Snapshot Service ---
 
 const SnapshotService = {
   async createSnapshot() {
-    const state = await loadState();
-
-    // Validate state against actual open tabs to ensure we only snapshot truly suspended tabs
-    await validateState(state);
-
-    if (!state || !state.suspendedTabs || Object.keys(state.suspendedTabs).length === 0) {
-      return;
-    }
-
-    // We only create snapshots if we have the key to encrypt them (if encryption is on)
-    const settings = await ensureSettings();
-    if (settings.encryption.enabled && (encryptionIsLocked() || !hasCryptoKey())) {
-      Logger.warn('Skipping snapshot: Encryption enabled but key not available');
-      return;
-    }
+    const previousLock = snapshotLock;
+    let release;
+    snapshotLock = new Promise(resolve => { release = resolve; });
 
     try {
+      await previousLock; // serialize
+
+      const state = await loadState();
+
+      // Validate state against actual open tabs to ensure we only snapshot truly suspended tabs
+      await validateState(state);
+
+      if (!state || !state.suspendedTabs || Object.keys(state.suspendedTabs).length === 0) {
+        return;
+      }
+
+      // We only create snapshots if we have the key to encrypt them (if encryption is on)
+      const settings = await ensureSettings();
+      if (settings.encryption.enabled && (encryptionIsLocked() || !hasCryptoKey())) {
+        Logger.warn('Skipping snapshot: Encryption enabled but key not available');
+        return;
+      }
+
       let snapshotData;
       if (settings.encryption.enabled) {
         snapshotData = await encryptPayload(state);
@@ -72,19 +87,15 @@ const SnapshotService = {
       };
 
       const stored = await chrome.storage.local.get('backups');
-      let backups = stored.backups || [];
-      backups = pruneSnapshots(backups);
-      backups.push(snapshot);
-
-      // Prune old backups (keep last 20 newest)
-      backups = backups
-        .filter(b => b.timestamp >= Date.now() - 7 * 24 * 60 * 60 * 1000)
-        .slice(-20);
+      const existing = stored.backups || [];
+      const backups = pruneSnapshots([...existing, snapshot]);
 
       await chrome.storage.local.set({ backups });
       Logger.info('Snapshot created', { id: snapshot.id, tabCount: snapshot.tabCount });
     } catch (err) {
       Logger.error('Failed to create snapshot', err);
+    } finally {
+      release?.();
     }
   },
 
@@ -98,7 +109,7 @@ const SnapshotService = {
       id: b.id,
       timestamp: b.timestamp,
       tabCount: b.tabCount
-    })).reverse(); // Newest first
+    }));
   },
 
   async restoreSnapshot(snapshotId) {
@@ -159,6 +170,8 @@ const SnapshotService = {
     }
 
     const win = await chrome.windows.create({ focused: true });
+    const settings = await ensureSettings();
+    const embedOriginalUrl = settings.embedOriginalUrl !== false;
 
     // Load current state to append new suspended tabs
     const currentState = await loadState();
@@ -171,10 +184,12 @@ const SnapshotService = {
         const token = crypto.randomUUID();
         const suspendedUrl = new URL(chrome.runtime.getURL('suspended.html'));
         suspendedUrl.searchParams.set('token', token);
-        suspendedUrl.searchParams.set('url', entry.url);
-        if (entry.title) suspendedUrl.searchParams.set('title', entry.title);
-        // We don't have favicon in metadata usually, but if we did:
-        // if (entry.favIconUrl) suspendedUrl.searchParams.set('favicon', entry.favIconUrl);
+        if (embedOriginalUrl) {
+          suspendedUrl.searchParams.set('url', entry.url);
+          if (entry.title) suspendedUrl.searchParams.set('title', entry.title);
+          // We don't have favicon in metadata usually, but if we did:
+          if (entry.favIconUrl) suspendedUrl.searchParams.set('favicon', entry.favIconUrl);
+        }
 
         const newTab = await chrome.tabs.create({ windowId: win.id, url: suspendedUrl.toString(), active: false });
 
@@ -184,6 +199,8 @@ const SnapshotService = {
           token,
           windowId: win.id,
           suspendedAt: Date.now(), // Reset timestamp to now as it's a new suspension
+          tokenIssuedAt: Date.now(),
+          tokenUsed: false,
           reason: 'restored-from-snapshot'
         };
       }
@@ -206,8 +223,10 @@ const SnapshotService = {
 
 function pruneSnapshots(list) {
   if (!Array.isArray(list)) return [];
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  return list.filter(item => typeof item.timestamp === 'number' && item.timestamp >= cutoff);
+  const cutoff = Date.now() - SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const filtered = list.filter(item => typeof item.timestamp === 'number' && item.timestamp >= cutoff);
+  filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  return filtered.slice(0, SNAPSHOT_MAX);
 }
 
 async function getSnapshotById(snapshotId) {
@@ -255,11 +274,22 @@ async function openSnapshotTabs(snapshotId, { unsuspend = false } = {}) {
   const tabs = win.tabs || [];
   let firstTabId = tabs[0]?.id || null;
   let opened = 0;
+  const settings = await ensureSettings();
+  const embedOriginalUrl = settings.embedOriginalUrl !== false;
 
   // Load current state to append new suspended tabs
   const currentState = await loadState();
+  const existingUrls = new Set(Object.values(currentState?.suspendedTabs || {}).map(e => e.url));
+  const seenUrls = new Set();
 
   for (const [index, entry] of entries.entries()) {
+    if (!unsuspend) {
+      const urlKey = entry.url;
+      if (existingUrls.has(urlKey) || seenUrls.has(urlKey)) {
+        continue; // Avoid duplicates in state and tabs
+      }
+      seenUrls.add(urlKey);
+    }
     let urlToOpen;
     let isSuspended = false;
     let token = null;
@@ -271,9 +301,11 @@ async function openSnapshotTabs(snapshotId, { unsuspend = false } = {}) {
       token = crypto.randomUUID();
       const suspendedUrl = new URL(chrome.runtime.getURL('suspended.html'));
       suspendedUrl.searchParams.set('token', token);
-      suspendedUrl.searchParams.set('url', entry.url);
-      if (entry.title) suspendedUrl.searchParams.set('title', entry.title);
-      if (entry.favIconUrl) suspendedUrl.searchParams.set('favicon', entry.favIconUrl);
+      if (embedOriginalUrl) {
+        suspendedUrl.searchParams.set('url', entry.url);
+        if (entry.title) suspendedUrl.searchParams.set('title', entry.title);
+        if (entry.favIconUrl) suspendedUrl.searchParams.set('favicon', entry.favIconUrl);
+      }
 
       urlToOpen = suspendedUrl.toString();
       isSuspended = true;
@@ -294,6 +326,8 @@ async function openSnapshotTabs(snapshotId, { unsuspend = false } = {}) {
         token,
         windowId,
         suspendedAt: Date.now(),
+        tokenIssuedAt: Date.now(),
+        tokenUsed: false,
         reason: 'restored-from-snapshot'
       };
     }
@@ -310,10 +344,12 @@ async function openSnapshotTabs(snapshotId, { unsuspend = false } = {}) {
 
 // Create a promise that resolves when initialization is complete.
 // This ensures that event handlers can wait for settings/state to be loaded.
-let readyResolve;
-const ready = new Promise(resolve => {
-  readyResolve = resolve;
-});
+  let readyResolve;
+  const ready = new Promise(resolve => {
+    readyResolve = resolve;
+  });
+
+let snapshotLock = Promise.resolve();
 
 async function init() {
   try {
@@ -330,7 +366,12 @@ async function init() {
 
     const snapshotAlarm = await chrome.alarms.get('snapshotTimer');
     if (!snapshotAlarm) {
-      await chrome.alarms.create('snapshotTimer', { periodInMinutes: 60 });
+      await chrome.alarms.create('snapshotTimer', { periodInMinutes: SNAPSHOT_PERIOD_MINUTES });
+    }
+
+    const validateAlarm = await chrome.alarms.get('stateValidator');
+    if (!validateAlarm) {
+      await scheduleStateValidationAlarm();
     }
   } catch (err) {
     Logger.error('Initialization failed', err);
@@ -353,6 +394,7 @@ chrome.tabs.onRemoved.addListener(handleTabRemoved);
 chrome.tabs.onUpdated.addListener(handleTabUpdated);
 chrome.alarms.onAlarm.addListener(handleAlarm);
 chrome.idle.onStateChanged.addListener(handleIdleStateChange);
+chrome.storage.onChanged.addListener(handleStorageChanged);
 
 // --- Event Handlers ---
 
@@ -362,7 +404,7 @@ async function handleInstalled(details) {
     await chrome.storage.local.set({ [SETTINGS_KEY]: defaultSettings });
     await saveState({ suspendedTabs: {} });
     await scheduleAutoSuspendAlarm(); // Force schedule on install
-    await chrome.alarms.create('snapshotTimer', { periodInMinutes: 60 });
+    await chrome.alarms.create('snapshotTimer', { periodInMinutes: SNAPSHOT_PERIOD_MINUTES });
     try {
       await chrome.runtime.openOptionsPage();
     } catch (err) {
@@ -371,12 +413,18 @@ async function handleInstalled(details) {
   } else if (details.reason === 'update') {
     await ready; // Wait for init to ensure we have settings
     await scheduleAutoSuspendAlarm(); // Ensure alarm is correct after update
-    await chrome.alarms.create('snapshotTimer', { periodInMinutes: 60 });
+    await chrome.alarms.create('snapshotTimer', { periodInMinutes: SNAPSHOT_PERIOD_MINUTES });
   }
 }
 
 async function handleStartup() {
   await ready;
+}
+
+function handleStorageChanged(changes, areaName) {
+  if (areaName === 'local' && changes[STATE_KEY]) {
+    cachedState = null;
+  }
 }
 
 async function saveSettings(nextSettings) {
@@ -395,8 +443,7 @@ async function saveSettings(nextSettings) {
 }
 
 async function loadState() {
-  if (encryptionIsLocked() || !hasCryptoKey()) {
-    stateLocked = true;
+  if (stateIsLocked()) {
     cachedState = await loadPendingState();
     return cachedState;
   }
@@ -408,19 +455,15 @@ async function loadState() {
   if (payload && payload.ct) {
     try {
       cachedState = await decryptPayload(payload);
-      stateLocked = false;
       await clearPendingState();
     } catch (err) {
       Logger.warn('Failed to decrypt state', err);
       cachedState = { suspendedTabs: {} };
-      stateLocked = false;
     }
   } else if (payload && payload.plain) {
     cachedState = payload.plain;
-    stateLocked = false;
   } else {
     cachedState = { suspendedTabs: {} };
-    stateLocked = false;
   }
   return cachedState;
 }
@@ -434,19 +477,16 @@ async function saveState(state) {
   cachedState = state;
   const settings = await ensureSettings();
   if (settings.encryption.enabled) {
-    if (encryptionIsLocked() || !hasCryptoKey()) {
-      stateLocked = true;
+    if (stateIsLocked()) {
       await savePendingState(state);
       return;
     }
     const encrypted = await encryptPayload(state);
     await chrome.storage.local.set({ [STATE_KEY]: encrypted });
     await clearPendingState();
-    stateLocked = false;
   } else {
     await chrome.storage.local.set({ [STATE_KEY]: { plain: state } });
     await clearPendingState();
-    stateLocked = false;
   }
 }
 
@@ -518,7 +558,7 @@ async function unsuspendWhitelistedTabs(whitelist) {
     if (matchesWhitelist(entry.url, whitelist)) {
       const tabId = Number(tabIdStr);
       Logger.info('Auto-unsuspending whitelisted tab', { tabId, url: entry.url });
-      await resumeSuspendedTab(tabId, entry, { focus: false });
+      await resumeSuspendedTab(tabId, entry, { focus: false, reloadIfDiscarded: true });
       delete state.suspendedTabs[tabId];
     }
   }
@@ -539,13 +579,27 @@ async function clearPendingState() {
 }
 
 function mergeStates(primary, secondary) {
-  const merged = {
-    suspendedTabs: { ...(primary?.suspendedTabs || {}) },
-  };
-  for (const [tabId, entry] of Object.entries(secondary?.suspendedTabs || {})) {
-    if (!merged.suspendedTabs[tabId]) {
+  const merged = { suspendedTabs: {} };
+  const addOrMerge = (tabId, entry) => {
+    const existing = merged.suspendedTabs[tabId];
+    if (!existing) {
       merged.suspendedTabs[tabId] = entry;
+      return;
     }
+    const existingTs = Number(existing.suspendedAt ?? existing.tokenIssuedAt ?? 0);
+    const incomingTs = Number(entry.suspendedAt ?? entry.tokenIssuedAt ?? 0);
+    if (incomingTs > existingTs) {
+      merged.suspendedTabs[tabId] = { ...existing, ...entry };
+    } else if (!existingTs && incomingTs) {
+      merged.suspendedTabs[tabId] = { ...existing, ...entry };
+    }
+  };
+
+  for (const [tabId, entry] of Object.entries(primary?.suspendedTabs || {})) {
+    merged.suspendedTabs[tabId] = entry;
+  }
+  for (const [tabId, entry] of Object.entries(secondary?.suspendedTabs || {})) {
+    addOrMerge(tabId, entry);
   }
   return merged;
 }
@@ -556,28 +610,41 @@ async function validateState(state) {
   const tabIds = Object.keys(state.suspendedTabs).map(Number);
   if (tabIds.length === 0) return;
 
+  // Batch query tabs once to avoid N calls
+  const allTabs = await chrome.tabs.query({});
+  const tabMap = new Map(allTabs.map(t => [t.id, t]));
+  const suspendedPagePrefix = chrome.runtime.getURL('suspended.html');
+
   let changed = false;
   for (const tabId of tabIds) {
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      const entry = state.suspendedTabs[tabId];
+    const entry = state.suspendedTabs[tabId];
+    const tab = tabMap.get(tabId);
 
-      // Check if tab is actually suspended
-      if (entry.method === 'discard') {
-        if (!tab.discarded) {
-          // Tab is active/loaded, so it's not suspended
-          delete state.suspendedTabs[tabId];
-          changed = true;
-        }
-      } else if (entry.method === 'page') {
-        if (!tab.url.startsWith(chrome.runtime.getURL('suspended.html'))) {
-          // Tab is on a different page, so it's not suspended
-          delete state.suspendedTabs[tabId];
-          changed = true;
-        }
+    if (!tab) {
+      delete state.suspendedTabs[tabId];
+      changed = true;
+      continue;
+    }
+
+    // Never keep incognito entries
+    if (tab.incognito) {
+      delete state.suspendedTabs[tabId];
+      changed = true;
+      continue;
+    }
+
+    if (entry.method === 'discard') {
+      if (!tab.discarded) {
+        delete state.suspendedTabs[tabId];
+        changed = true;
       }
-    } catch (err) {
-      // Tab does not exist
+    } else if (entry.method === 'page') {
+      if (!tab.url.startsWith(suspendedPagePrefix)) {
+        delete state.suspendedTabs[tabId];
+        changed = true;
+      }
+    } else {
+      // Unknown method — prune
       delete state.suspendedTabs[tabId];
       changed = true;
     }
@@ -622,6 +689,7 @@ async function handleTabRemoved(tabId) {
   if (state && state.suspendedTabs && state.suspendedTabs[tabId]) {
     delete state.suspendedTabs[tabId];
     await saveState(state);
+    await validateState(state);
   }
 }
 
@@ -663,6 +731,10 @@ async function handleTabUpdated(tabId, changeInfo, tab) {
       }
     }
   }
+  const currentState = await loadState();
+  if (currentState) {
+    await validateState(currentState);
+  }
 }
 
 async function handleAlarm(alarm) {
@@ -671,6 +743,11 @@ async function handleAlarm(alarm) {
     await autoSuspendTick();
   } else if (alarm.name === 'snapshotTimer') {
     await SnapshotService.createSnapshot();
+  } else if (alarm.name === 'stateValidator') {
+    const state = await loadState();
+    if (state) {
+      await validateState(state);
+    }
   }
 }
 
@@ -698,19 +775,30 @@ async function autoSuspendTick() {
   const settings = await ensureSettings();
   const tabs = await chrome.tabs.query({ windowType: 'normal' });
   const now = Date.now();
+  const candidates = [];
   for (const tab of tabs) {
-    if (!(await shouldSuspendTab(tab, settings, now))) {
-      continue;
-    }
-    try {
-      await suspendTab(tab, 'auto');
-    } catch (err) {
-      // Ignore "No tab with id" errors as they are expected race conditions
-      if (!err.message.includes('No tab with id')) {
-        Logger.warn('Failed to auto-suspend tab', { tabId: tab.id, err });
-      }
+    if (await shouldSuspendTab(tab, settings, now)) {
+      candidates.push(tab);
     }
   }
+
+  const limit = 5;
+  let index = 0;
+  const worker = async () => {
+    while (index < candidates.length) {
+      const current = candidates[index++];
+      try {
+        await suspendTab(current, 'auto');
+      } catch (err) {
+        if (!err.message.includes('No tab with id')) {
+          Logger.warn('Failed to auto-suspend tab', { tabId: current.id, err });
+        }
+      }
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(limit, candidates.length) }, () => worker());
+  await Promise.all(workers);
 }
 
 async function shouldSuspendTab(tab, settings, now) {
@@ -741,9 +829,12 @@ async function shouldSuspendTab(tab, settings, now) {
 async function cacheFavicon(faviconUrl) {
   if (!faviconUrl || faviconUrl.startsWith('data:')) return faviconUrl;
   try {
-    const response = await fetch(faviconUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    const response = await fetch(faviconUrl, { signal: controller.signal });
+    clearTimeout(timeout);
     const blob = await response.blob();
-    return new Promise((resolve) => {
+    return await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result);
       reader.onerror = () => resolve(null);
@@ -773,6 +864,14 @@ async function suspendViaDiscard(tab, reason) {
     if (!updated.discarded) {
       throw new Error('Tab was not discarded');
     }
+
+    // Re-check shortly after to detect silent reloads
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const rechecked = await chrome.tabs.get(tab.id).catch(() => null);
+    if (!rechecked || !rechecked.discarded) {
+      Logger.warn('Discard did not persist; falling back to page suspension', { tabId: tab.id, url: tab.url });
+      return suspendViaPage(tab, reason);
+    }
     const state = await loadState();
     if (state) {
       // Cache favicon if available
@@ -781,7 +880,7 @@ async function suspendViaDiscard(tab, reason) {
         faviconDataUri = await cacheFavicon(tab.favIconUrl);
       }
 
-      state.suspendedTabs[tab.id] = {
+      const metadata = {
         url: tab.url,
         title: tab.title,
         windowId: tab.windowId,
@@ -791,6 +890,7 @@ async function suspendViaDiscard(tab, reason) {
         favIconUrl: tab.favIconUrl,
         faviconDataUri // Store cached Data URI
       };
+      state.suspendedTabs[tab.id] = metadata;
       await saveState(state);
     }
     return true;
@@ -806,6 +906,8 @@ async function suspendViaPage(tab, reason) {
     Logger.warn('State locked; cannot record suspension');
     return false;
   }
+  const settings = await ensureSettings();
+  const embedOriginalUrl = settings.embedOriginalUrl !== false;
 
   // Cache favicon if available
   let faviconDataUri = null;
@@ -822,29 +924,30 @@ async function suspendViaPage(tab, reason) {
     method: 'page',
     reason,
     token,
+    tokenIssuedAt: Date.now(),
+    tokenUsed: false,
     favIconUrl: tab.favIconUrl,
     faviconDataUri // Store cached Data URI
   };
-  state.suspendedTabs[tab.id] = metadata;
-  await saveState(state);
-
   const suspendedUrl = new URL(chrome.runtime.getURL('suspended.html'));
   suspendedUrl.searchParams.set('token', token);
-  suspendedUrl.searchParams.set('url', tab.url);
-  if (tab.title) {
-    suspendedUrl.searchParams.set('title', tab.title);
-  }
-  if (tab.favIconUrl) {
-    suspendedUrl.searchParams.set('favicon', tab.favIconUrl);
+  if (embedOriginalUrl) {
+    suspendedUrl.searchParams.set('url', tab.url);
+    if (tab.title) {
+      suspendedUrl.searchParams.set('title', tab.title);
+    }
+    if (tab.favIconUrl) {
+      suspendedUrl.searchParams.set('favicon', tab.favIconUrl);
+    }
   }
 
   try {
     await chrome.tabs.update(tab.id, { url: suspendedUrl.toString() });
+    state.suspendedTabs[tab.id] = metadata;
+    await saveState(state);
     return true;
   } catch (err) {
     Logger.warn('Failed to navigate tab to parked page', err);
-    delete state.suspendedTabs[tab.id];
-    await saveState(state);
     return false;
   }
 }
@@ -876,7 +979,15 @@ async function scheduleAutoSuspendAlarm() {
   });
 }
 
-async function resumeSuspendedTab(tabId, metadata, { focus = true } = {}) {
+async function scheduleStateValidationAlarm() {
+  // Run every 15 minutes to keep state clean
+  await chrome.alarms.clear('stateValidator');
+  await chrome.alarms.create('stateValidator', {
+    periodInMinutes: 15,
+  });
+}
+
+async function resumeSuspendedTab(tabId, metadata, { focus = true, reloadIfDiscarded = false } = {}) {
   if (!metadata) {
     return false;
   }
@@ -884,6 +995,8 @@ async function resumeSuspendedTab(tabId, metadata, { focus = true } = {}) {
     if (metadata.method === 'discard') {
       if (focus) {
         await chrome.tabs.update(tabId, { active: true });
+      } else if (reloadIfDiscarded) {
+        await chrome.tabs.reload(tabId);
       }
       // Chrome will reload discarded tabs automatically on activation.
       return true;
@@ -951,7 +1064,6 @@ async function reconcilePendingStateAfterUnlock() {
     }
 
     cachedState = merged;
-    stateLocked = false;
     await clearPendingState();
 
     // We must call the internal save logic directly or ensure saveState doesn't deadlock.
@@ -978,7 +1090,6 @@ async function resetEncryption() {
   await clearSessionKey();
   await clearKeyRecords();
   cachedState = null;
-  stateLocked = false;
   await chrome.storage.local.remove([STATE_KEY, 'backups']);
   await clearPendingState();
 
@@ -1026,6 +1137,14 @@ function handleMessage(message, sender, sendResponse) {
         sendResponse(result);
         break;
       }
+      case 'RETRY_IMPORT_KEY': {
+        const result = await retryImportPlaintextKey();
+        if (result?.ok) {
+          await reconcilePendingStateAfterUnlock();
+        }
+        sendResponse(result);
+        break;
+      }
       case 'SET_PASSKEY': {
         const result = await persistPasskey(message.passkey);
         sendResponse(result);
@@ -1067,7 +1186,7 @@ function handleMessage(message, sender, sendResponse) {
         break;
       }
       case 'RESUME_TAB': {
-        if (typeof message.tabId === 'number') {
+      if (typeof message.tabId === 'number' && Number.isInteger(message.tabId)) {
           const state = await loadState();
           const entry = state?.suspendedTabs?.[message.tabId];
           if (entry) {
@@ -1097,7 +1216,7 @@ function handleMessage(message, sender, sendResponse) {
         for (const [tabIdStr, entry] of entries) {
           const tabId = Number(tabIdStr);
           // We don't focus on individual tabs when resuming all
-          const resumed = await resumeSuspendedTab(tabId, entry, { focus: false });
+          const resumed = await resumeSuspendedTab(tabId, entry, { focus: false, reloadIfDiscarded: true });
           if (resumed) {
             delete state.suspendedTabs[tabId];
           }
@@ -1108,16 +1227,17 @@ function handleMessage(message, sender, sendResponse) {
       }
       case 'GET_STATE': {
         const state = await loadState();
-        if (stateLocked || encryptionIsLocked()) {
+        if (stateIsLocked()) {
           sendResponse({ locked: true, reason: encryptionReason() });
-        } else {
-          sendResponse({ locked: false, state });
+          break;
         }
+        await validateState(state);
+        sendResponse({ locked: false, state });
         break;
       }
       case 'SUSPENDED_VIEW_INFO': {
         const state = await loadState();
-        if (!state || stateLocked || encryptionIsLocked()) {
+        if (!state || stateIsLocked()) {
           sendResponse({ locked: true });
           break;
         }
@@ -1148,11 +1268,24 @@ function handleMessage(message, sender, sendResponse) {
         }
         const { token } = message;
         const tabId = Number(message.tabId);
-        if (!Number.isInteger(tabId)) {
+      if (!Number.isInteger(tabId)) {
           sendResponse({ ok: false });
           break;
         }
         const entry = state.suspendedTabs[tabId];
+        if (!entry || entry.token !== token) {
+          sendResponse({ ok: false, error: 'invalid-token' });
+          break;
+        }
+        if (entry.tokenUsed) {
+          sendResponse({ ok: false, error: 'used' });
+          break;
+        }
+        const issuedAt = entry.tokenIssuedAt || entry.suspendedAt;
+        if (TOKEN_TTL_MS && issuedAt && Date.now() - issuedAt > TOKEN_TTL_MS) {
+          sendResponse({ ok: false, error: 'expired' });
+          break;
+        }
         if (entry && entry.token === token) {
           const resumed = await resumeSuspendedTab(tabId, entry, { focus: true });
           if (resumed) {
